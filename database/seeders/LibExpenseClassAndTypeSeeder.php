@@ -21,7 +21,7 @@ class LibExpenseClassAndTypeSeeder extends Seeder
             return;
         }
 
-        $years = [2023, 2024]; // pre-generate fiscal years
+        $years = [2023, 2024, 2025, 2026]; // pre-generate fiscal years
 
         $classes = [
             ['name' => 'SANGUNIANG KABATAAN (SK) - 10%', 'order' => 0],
