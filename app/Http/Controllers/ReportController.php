@@ -203,6 +203,26 @@ class ReportController extends Controller
         ]);
     }
 
+    //YEAR FILTER
+    public function getAvailableYears(Request $request)
+    {
+        $barangayId = $request->user()?->barangay_id;
+
+        if (!$barangayId) {
+            return response()->json(['years' => []]);
+        }
+
+        $years = TranAppropriation::where('barangay_id', $barangayId)
+            ->whereNotNull('transaction_date')
+            ->selectRaw('YEAR(transaction_date) as year')
+            ->distinct()
+            ->orderByDesc('year')
+            ->pluck('year')
+            ->map(fn($y) => ['label' => (string)$y, 'value' => (int)$y])
+            ->values();
+
+        return response()->json(['years' => $years]);
+    }
 
     public function getSacbReport(Request $request)
     {

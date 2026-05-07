@@ -76,6 +76,8 @@ Route::prefix('barangay')->group(function () {
         Route::get('fiscal-years', [AccountsLibController::class, 'getFiscalYears']);
         Route::post('fiscal-years', [AccountsLibController::class, 'createFiscalYear']);
 
+        Route::get('/reports/available-years', [ReportController::class, 'getAvailableYears']);
+
         // Expense Classes
         Route::get('expense-classes', [AccountsLibController::class, 'getExpenseClasses']);
         Route::post('expense-classes', [AccountsLibController::class, 'createExpenseClass']);

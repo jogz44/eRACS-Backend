@@ -101,12 +101,22 @@ class DisbursementController extends Controller
     {
         $query = Disbursement::with('bank', 'barangay');
 
-        // Filter by barangay_id if provided
-        if ($request->filled('barangay_id')) {
-            $query->where('barangay_id', $request->barangay_id);
-        }
+    if ($request->filled('barangay_id')) {
+        $query->where('barangay_id', $request->barangay_id);
+    }
 
-        $disbursements = $query->orderByDesc('date')->get();
+    // Add year filter — same logic as index()
+    if ($request->filled('year')) {
+        $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function($q) use ($request) {
+            $q->where('year', $request->year);
+        });
+    } else {
+        $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function($q) {
+            $q->where('year', now()->year);
+        });
+    }
+
+    $disbursements = $query->orderByDesc('date')->get();
         $result = $disbursements->map(function($d) {
             return [
                 'id' => $d->id,

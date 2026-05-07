@@ -240,70 +240,73 @@ class ContinuingAppropriationController extends Controller
      * Get all continuing appropriations for the current barangay
      */
     public function getContinuingAppropriations(Request $request)
-    {
-        try {
-            $continuingAppropriations = ContAppropriation::with(['continuingAccounts.transactionAppropriation', 'fiscalYear'])
-                ->where('barangay_id', $request->user()->barangay_id)
-                ->orderBy('created_at', 'desc')
-                ->get()
-                ->map(function ($item) {
-                    // Calculate total disbursed amount from continuing appropriation accounts
-                    $totalDisbursed = 0;
-                    foreach ($item->continuingAccounts as $account) {
-                        // Get all expense details that used this continuing appropriation account
-                        $disbursedAmount = \App\Models\ContTranExpenseDetail::where('cont_appro_account_id', $account->id)
-                            ->sum('amount');
-                        $totalDisbursed += $disbursedAmount;
-                    }
+{
+    try {
+        $query = ContAppropriation::with(['continuingAccounts.transactionAppropriation', 'fiscalYear'])
+            ->where('barangay_id', $request->user()->barangay_id);
 
-                    // Calculate available amount (original appropriation - total disbursed)
-                    $availableAmount = (float) $item->appropriation_amount - (float) $totalDisbursed;
-
-                    return [
-                        'id' => $item->id,
-                        'continued_date' => $item->continued_date->format('m/d/Y'),
-                        'year' => $item->fiscalYear->year,
-                        'expense_class' => $item->expense_class,
-                        'description' => $item->description,
-                        'appropriation' => (float) $item->appropriation_amount,
-                        'total_appropriated' => (float) $totalDisbursed, // This now shows actual disbursed amount
-                        'unappropriated' => (float) $availableAmount, // This now shows actual available amount
-                        'status' => $item->status,
-                        'accounts' => $item->continuingAccounts->map(function ($account) {
-                            $tranApp = $account->transactionAppropriation;
-                            $accountNameParts = [
-                                $tranApp->expenseClass?->name,
-                                $tranApp->expenseType?->name,
-                                $tranApp->expenseItem?->name,
-                                $tranApp->expenseSubItem?->name
-                            ];
-                            
-                            return [
-                                'id' => $account->id,
-                                'balance' => (float) $account->current_amount,
-                                'accountName' => implode(' > ', array_filter($accountNameParts)),
-                                'expenseClass' => $tranApp->expenseClass?->name,
-                                'expenseType' => $tranApp->expenseType?->name,
-                                'expenseItem' => $tranApp->expenseItem?->name,
-                                'expenseSubItem' => $tranApp->expenseSubItem?->name,
-                                'subItems' => $tranApp->subItems ?? [],
-                            ];
-                        })
-                    ];
-                });
-
-            return response()->json([
-                'status' => true,
-                'data' => $continuingAppropriations
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'status' => false,
-                'message' => 'Failed to fetch continuing appropriations: ' . $e->getMessage()
-            ], 500);
+        if ($request->has('fiscal_year_id')) {
+            $query->where('fiscal_year_id', $request->fiscal_year_id);
         }
+
+        $continuingAppropriations = $query->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($item) {
+                // Calculate total disbursed amount from continuing appropriation accounts
+                $totalDisbursed = 0;
+                foreach ($item->continuingAccounts as $account) {
+                    $disbursedAmount = \App\Models\ContTranExpenseDetail::where('cont_appro_account_id', $account->id)
+                        ->sum('amount');
+                    $totalDisbursed += $disbursedAmount;
+                }
+
+                $availableAmount = (float) $item->appropriation_amount - (float) $totalDisbursed;
+
+                return [
+                    'id' => $item->id,
+                    'continued_date' => $item->continued_date->format('m/d/Y'),
+                    'year' => $item->fiscalYear->year,
+                    'expense_class' => $item->expense_class,
+                    'description' => $item->description,
+                    'appropriation' => (float) $item->appropriation_amount,
+                    'total_appropriated' => (float) $totalDisbursed,
+                    'unappropriated' => (float) $availableAmount,
+                    'status' => $item->status,
+                    'accounts' => $item->continuingAccounts->map(function ($account) {
+                        $tranApp = $account->transactionAppropriation;
+                        $accountNameParts = [
+                            $tranApp->expenseClass?->name,
+                            $tranApp->expenseType?->name,
+                            $tranApp->expenseItem?->name,
+                            $tranApp->expenseSubItem?->name
+                        ];
+
+                        return [
+                            'id' => $account->id,
+                            'balance' => (float) $account->current_amount,
+                            'accountName' => implode(' > ', array_filter($accountNameParts)),
+                            'expenseClass' => $tranApp->expenseClass?->name,
+                            'expenseType' => $tranApp->expenseType?->name,
+                            'expenseItem' => $tranApp->expenseItem?->name,
+                            'expenseSubItem' => $tranApp->expenseSubItem?->name,
+                            'subItems' => $tranApp->subItems ?? [],
+                        ];
+                    })
+                ];
+            });
+
+        return response()->json([
+            'status' => true,
+            'data' => $continuingAppropriations
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Failed to fetch continuing appropriations: ' . $e->getMessage()
+        ], 500);
     }
+}
 
     /**
      * Update the status of a continuing appropriation
