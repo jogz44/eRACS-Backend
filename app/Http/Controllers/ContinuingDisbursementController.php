@@ -21,7 +21,7 @@ class ContinuingDisbursementController extends Controller
         $user = $request->user();
         $query = ContDisbursement::where('barangay_id', $user->barangay_id)
             ->with(['bank', 'expenseDetails.contApproAccount.transactionAppropriation.expenseClass', 'expenseDetails.contApproAccount.transactionAppropriation.expenseType', 'expenseDetails.contApproAccount.transactionAppropriation.expenseItem']);
-
+            dd($user->barangay_id);
         $disbursements = $query->orderByDesc('created_at')->get();
 
         $formattedDisbursements = $disbursements->map(function ($disbursement) {

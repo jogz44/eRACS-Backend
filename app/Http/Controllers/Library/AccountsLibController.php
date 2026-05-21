@@ -617,23 +617,26 @@ public function updateTypeOrder(Request $request)
 
     //Exepnse Type Methods
 
- public function getExpenseTypes($classId)
+public function getExpenseTypes($classId)
+{
+    $this->verifyBarangayAccess();
+    $barangayId = Auth::user()->barangay_id;
 
- // Get all expense types for a specific class
-    {
-        $this->verifyBarangayAccess();
-        $barangayId = Auth::user()->barangay_id;
+    $types = LibExpenseType::where('expense_class_id', $classId)
+        ->whereHas('expenseClass', function ($query) use ($barangayId) {
+            $query->where('barangay_id', $barangayId);
+        })
+        ->with('items')
+        ->orderBy('order', 'asc')
+        ->get();
 
-        return response()->json(
-            LibExpenseType::where('expense_class_id', $classId)
-                ->whereHas('expenseClass', function($query) use ($barangayId) {
-                    $query->where('barangay_id', $barangayId);
-                })
-                ->with('items') // Eager load items
-                ->orderBy('order')
-                ->get()
-        );
-    }
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'data' => $types,
+        ],
+    ]);
+}
 
 // Create a new expense type
 public function createExpenseType(Request $request, $classId)
