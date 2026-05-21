@@ -19,9 +19,11 @@ return new class extends Migration
             $table->text('particulars')->nullable(); // Description/particulars for this expense
             $table->timestamps();
 
-            // Foreign key constraints
+            // Foreign key constraints  
             $table->foreign('disbursement_id')->references('id')->on('disbursements')->onDelete('cascade');
             $table->foreign('appropriation_id')->references('id')->on('tran_appropriations')->onDelete('cascade');
+            $table->foreignId('bank_id')->nullable()->after('particulars')->constrained('lib_banks');
+    $table->string('cheque_number')->nullable()->after('bank_id');
 
             // Indexes for better performance
             $table->index(['disbursement_id']);

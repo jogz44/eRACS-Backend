@@ -11,6 +11,8 @@ use App\Http\Controllers\Transaction\AppropriationController;
 use App\Http\Controllers\Transaction\ContinuingAppropriationController;
 use App\Http\Controllers\ContinuingDisbursementController;
 use App\Http\Controllers\BudgetAugmentationController;
+use App\Http\Controllers\BirRemittanceController;
+use App\Http\Controllers\FundTransferController;
 use App\Http\Controllers\AdminReviewController;
 use App\Http\Middleware\AuthTokenValid;
 use App\Models\Barangay;
@@ -227,8 +229,27 @@ Route::prefix('barangay')->group(function () {
         Route::delete('/continuing-disbursements/{id}/or-details/{orDetailId}', [ContinuingDisbursementController::class, 'deleteOrDetail']);
         // Continuing Disbursement OR Photo Upload
         Route::post('/continuing-disbursements/or-photo/upload', [ContinuingDisbursementController::class, 'uploadOrPhoto']);
+    
+        // BIR Remittances
+        Route::get('bir-remittances', [BirRemittanceController::class, 'index']);
+        Route::post('bir-remittances', [BirRemittanceController::class, 'store']);
+        Route::get('bir-remittances/{id}', [BirRemittanceController::class, 'show']);
+        Route::put('bir-remittances/{id}', [BirRemittanceController::class, 'update']);
+        Route::delete('bir-remittances/{id}', [BirRemittanceController::class, 'destroy']);
 
+        // Route::get('sk-aid', [FundTransferController::class, 'index']);
+        // Route::post('sk-aid', [FundTransferController::class, 'store']);
+        // Route::get('sk-aid/{id}', [FundTransferController::class, 'show']);
+        Route::get('fund-transfers', [FundTransferController::class, 'index']);
+        Route::post('fund-transfers', [FundTransferController::class, 'store']);
+        Route::get('fund-transfers/{id}', [FundTransferController::class, 'show']);
+        Route::post('fund-transfers/{id}/void-request', [FundTransferController::class, 'requestVoid']);
+        Route::post('fund-transfers/{id}/void-direct', [FundTransferController::class, 'voidDirect']);
+        Route::post('fund-transfers/{id}/void-approve', [FundTransferController::class, 'approveVoid']);
+        Route::post('fund-transfers/{id}/void-reject', [FundTransferController::class, 'rejectVoid']);
 
+        Route::get('/barangay/bir-remittances/pending-tax-total', 
+    [BirRemittanceController::class, 'pendingTaxTotal']);
     });
 
 });

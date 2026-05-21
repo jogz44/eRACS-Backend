@@ -38,9 +38,15 @@ class DisbursementController extends Controller
             return 'Unknown Account';
         }
         $parts = [];
-        if ($appr->expenseClass) { $parts[] = $appr->expenseClass->name; }
-        if ($appr->expenseType) { $parts[] = $appr->expenseType->name; }
-        if ($appr->expenseItem) { $parts[] = $appr->expenseItem->name; }
+        if ($appr->expenseClass) {
+            $parts[] = $appr->expenseClass->name;
+        }
+        if ($appr->expenseType) {
+            $parts[] = $appr->expenseType->name;
+        }
+        if ($appr->expenseItem) {
+            $parts[] = $appr->expenseItem->name;
+        }
         return implode(' > ', $parts) ?: 'Unknown Account';
     }
 
@@ -55,7 +61,14 @@ class DisbursementController extends Controller
                 'message' => 'User not authenticated'
             ], 401);
         }
-        $query = Disbursement::with(['bank', 'barangay']);
+
+        // $query = Disbursement::with(['bank', 'barangay']);
+        $query = Disbursement::with([
+            'bank',
+            'barangay',
+            'expenseDetails.bank',
+            'expenseDetails.appropriation.expenseClass.fiscalYear',
+        ]);
 
         // If user is authenticated and has barangay_id, filter by it
         if ($user && isset($user->barangay_id)) {
@@ -72,27 +85,42 @@ class DisbursementController extends Controller
 
         $disbursements = $query->orderByDesc('date')->get();
 
-        $result = $disbursements->map(function($d) {
-            return [
-                'id' => $d->id,
-                'date' => $d->date,
-                'dv_number' => $d->dv_number,
-                'cheque_number' => $d->cheque_number,
-                'bank_id' => $d->bank_id,
-                'bank_name' => $d->bank->bank_name,
-                'payee' => $d->payee,
-                'dv_amount' => $d->dv_amount,
-                'status' => $d->status,
-                'remarks' => $d->remarks,
-                'rejection_remarks' => $d->rejection_remarks,
-                'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
-                'created_at' => $d->created_at,
-                'updated_at' => $d->updated_at,
-            ];
-        });
+
+        $result = $disbursements->flatMap(function ($d) {
+            return $d->expenseDetails->map(function ($detail) use ($d) {
+                return [
+                    // 'id' => $d->id . '-' . $detail->id,
+                    'id' => $d->id,
+                    'row_id' => $d->id . '-' . $detail->id,
+                    'disbursement_id' => $d->id,
+                    'expense_detail_id' => $detail->id,
+
+                    'date' => $d->date,
+                    'dv_number' => $d->dv_number,
+                    'payee' => $d->payee,
+
+                    'cheque_number' => $detail->cheque_number ?: $d->cheque_number,
+                    'bank_id' => $detail->bank_id ?: $d->bank_id,
+                    'bank_name' => $detail->bank
+                        ? $detail->bank->bank_name
+                        : optional($d->bank)->bank_name,
+
+                    'particular' => $detail->particulars,
+                    'dv_amount' => $detail->amount,
+
+                    'status' => $d->status,
+                    'remarks' => $d->remarks,
+                    'rejection_remarks' => $d->rejection_remarks,
+                    'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
+                    'created_at' => $d->created_at,
+                    'updated_at' => $d->updated_at,
+                ];
+            });
+        })->values();
+
         return response()->json([
             'status' => true,
-            'data' => $result
+            'data' => $result,
         ]);
     }
 
@@ -101,23 +129,23 @@ class DisbursementController extends Controller
     {
         $query = Disbursement::with('bank', 'barangay');
 
-    if ($request->filled('barangay_id')) {
-        $query->where('barangay_id', $request->barangay_id);
-    }
+        if ($request->filled('barangay_id')) {
+            $query->where('barangay_id', $request->barangay_id);
+        }
 
-    // Add year filter — same logic as index()
-    if ($request->filled('year')) {
-        $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function($q) use ($request) {
-            $q->where('year', $request->year);
-        });
-    } else {
-        $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function($q) {
-            $q->where('year', now()->year);
-        });
-    }
+        // Add year filter — same logic as index()
+        if ($request->filled('year')) {
+            $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function ($q) use ($request) {
+                $q->where('year', $request->year);
+            });
+        } else {
+            $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function ($q) {
+                $q->where('year', now()->year);
+            });
+        }
 
-    $disbursements = $query->orderByDesc('date')->get();
-        $result = $disbursements->map(function($d) {
+        $disbursements = $query->orderByDesc('date')->get();
+        $result = $disbursements->map(function ($d) {
             return [
                 'id' => $d->id,
                 'date' => $d->date,
@@ -163,6 +191,9 @@ class DisbursementController extends Controller
             'expenses.*.accountId' => 'required|integer',
             'expenses.*.amount' => 'required|numeric|min:0',
             'expenses.*.particular' => 'nullable|string',
+            'expenses.*.bank_id' => 'required|exists:lib_banks,id',
+            'expenses.*.cheque_number' => 'required|string',
+            'expenses.*.expense_sub_item_id' => 'nullable|exists:lib_expense_sub_items,id',
             'expenses.*.expense_class_id' => 'nullable|exists:lib_expense_classes,id',
             'expenses.*.expense_type_id' => 'nullable|exists:lib_expense_types,id',
             'expenses.*.expense_item_id' => 'nullable|exists:lib_expense_items,id',
@@ -193,18 +224,41 @@ class DisbursementController extends Controller
                 'status' => 'Unliquidated',
             ]);
 
-            // update the selected lib_cheque_numbers status to 'Used'
-            $chequeNumber = $request->cheque_number;
-            $cheque = LibCheque::where('cheque_number', $chequeNumber)
-                ->where('booklet_id', $request->cheque_booklet) // Assuming cheque_booklet is passed in the request
-                ->where('status', 'unused')
-                ->firstorFail();
+            // // update the selected lib_cheque_numbers status to 'Used'
+            // $chequeNumber = $request->cheque_number;
+            // $cheque = LibCheque::where('cheque_number', $chequeNumber)
+            //     ->where('booklet_id', $request->cheque_booklet) // Assuming cheque_booklet is passed in the request
+            //     ->where('status', 'unused')
+            //     ->firstorFail();
 
-            $cheque->update([
-                'status' => 'used',
-                'disbursement_id' => $disbursement->id,
-            ]);
+            // $cheque->update([
+            //     'status' => 'used',
+            //     'disbursement_id' => $disbursement->id,
+            // ]);
 
+            $usedCheques = [];
+
+            foreach ($request->expenses as $expense) {
+                $key = $expense['bank_id'] . ':' . $expense['cheque_number'];
+
+                if (isset($usedCheques[$key])) {
+                    continue;
+                }
+
+                $bookletIds = LibBooklet::where('bank_id', $expense['bank_id'])->pluck('id');
+
+                $cheque = LibCheque::where('cheque_number', $expense['cheque_number'])
+                    ->whereIn('booklet_id', $bookletIds)
+                    ->where('status', 'unused')
+                    ->firstOrFail();
+
+                $cheque->update([
+                    'status' => 'used',
+                    'disbursement_id' => $disbursement->id,
+                ]);
+
+                $usedCheques[$key] = true;
+            }
 
             // Save expense details to tran_expense_details table
             $logExpenseLines = [];
@@ -214,16 +268,18 @@ class DisbursementController extends Controller
                     $appropriationQuery = TranAppropriation::where('barangay_id', $barangayId)
                         ->where('status', 'committed');
 
-                    if (isset($expense['expense_item_id'])) {
-                        $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-                    } elseif (isset($expense['expense_type_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->where('expense_type_id', $expense['expense_type_id']);
-                    } elseif (isset($expense['expense_class_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->whereNull('expense_type_id')
-                            ->where('expense_class_id', $expense['expense_class_id']);
-                    }
+                    if (!empty($expense['expense_sub_item_id'])) {
+    $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
+} elseif (!empty($expense['expense_item_id'])) {
+    $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
+} elseif (!empty($expense['expense_type_id'])) {
+    $appropriationQuery->whereNull('expense_item_id')
+        ->where('expense_type_id', $expense['expense_type_id']);
+} elseif (!empty($expense['expense_class_id'])) {
+    $appropriationQuery->whereNull('expense_item_id')
+        ->whereNull('expense_type_id')
+        ->where('expense_class_id', $expense['expense_class_id']);
+}
 
                     $appropriation = $appropriationQuery->first();
 
@@ -234,6 +290,8 @@ class DisbursementController extends Controller
                             'appropriation_id' => $appropriation->id,
                             'amount' => $expense['amount'],
                             'particulars' => $expense['particular'] ?? '',
+                            'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+                            'bank_id' => $expense['bank_id'] ?? null,
                         ]);
 
                         // Prepare log line per expense
@@ -282,7 +340,6 @@ class DisbursementController extends Controller
                 'message' => 'Disbursement created successfully',
                 'data' => $disbursement
             ], 201);
-
         } catch (\Exception $e) {
             \Log::error('Error creating disbursement: ' . $e->getMessage());
             return response()->json([
@@ -298,7 +355,14 @@ class DisbursementController extends Controller
     {
         $request->validate([
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
-            'dv_number' => 'required|string|unique:disbursements,dv_number',
+            // 'dv_number' => 'required|string|unique:disbursements,dv_number',
+            'dv_number' => [
+                'required',
+                'string',
+                \Illuminate\Validation\Rule::unique('disbursements', 'dv_number'),
+                \Illuminate\Validation\Rule::unique('bir_remittances', 'dv_number'),
+                \Illuminate\Validation\Rule::unique('fund_transfers', 'dv_number'),
+            ],
             'ref_dv_number' => 'required|string|exists:disbursements,dv_number',
             'cheque_number' => 'required|string',
             'bank_id' => 'required|exists:lib_banks,id',
@@ -326,7 +390,7 @@ class DisbursementController extends Controller
             'barangay_id' => 'nullable|exists:barangays,id', // Added for admin
         ]);
 
-        try{
+        try {
             $user = $request->user();
             $adminUser = $request->user('admin');
 
@@ -454,7 +518,7 @@ class DisbursementController extends Controller
                         ->where('expense_class_id', $expense['expense_class_id'])
                         ->where('expense_type_id', $expense['expense_type_id'])
                         ->get(['id', 'expense_class_id', 'expense_type_id', 'expense_item_id', 'expense_sub_item_id', 'amount']);
-                    
+
                     \Log::info('Reimbursement: All appropriations for this expense hierarchy', [
                         'expense_class_id' => $expense['expense_class_id'],
                         'expense_type_id' => $expense['expense_type_id'],
@@ -466,19 +530,32 @@ class DisbursementController extends Controller
                     $appropriationQuery = TranAppropriation::where('barangay_id', $barangayId)
                         ->where('status', 'committed');
 
-                    if (isset($expense['expense_item_id'])) {
+                    // if (isset($expense['expense_item_id'])) {
+                    //     $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
+                    // } elseif (isset($expense['expense_type_id'])) {
+                    //     $appropriationQuery->whereNull('expense_item_id')
+                    //         ->where('expense_type_id', $expense['expense_type_id']);
+                    // } elseif (isset($expense['expense_class_id'])) {
+                    //     $appropriationQuery->whereNull('expense_item_id')
+                    //         ->whereNull('expense_type_id')
+                    //         ->where('expense_class_id', $expense['expense_class_id']);
+                    // }
+
+                    if (!empty($expense['expense_sub_item_id'])) {
+                        $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
+                    } elseif (!empty($expense['expense_item_id'])) {
                         $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-                    } elseif (isset($expense['expense_type_id'])) {
+                    } elseif (!empty($expense['expense_type_id'])) {
                         $appropriationQuery->whereNull('expense_item_id')
                             ->where('expense_type_id', $expense['expense_type_id']);
-                    } elseif (isset($expense['expense_class_id'])) {
+                    } elseif (!empty($expense['expense_class_id'])) {
                         $appropriationQuery->whereNull('expense_item_id')
                             ->whereNull('expense_type_id')
                             ->where('expense_class_id', $expense['expense_class_id']);
                     }
 
                     $appropriation = $appropriationQuery->first();
-                    
+
                     \Log::info('Reimbursement: Appropriation lookup result', [
                         'appropriation_found' => $appropriation ? true : false,
                         'appropriation_id' => $appropriation ? $appropriation->id : null,
@@ -490,15 +567,15 @@ class DisbursementController extends Controller
                             'expense_sub_item_id' => $appropriation->expense_sub_item_id
                         ] : null
                     ]);
-                    
+
                     // If no appropriation found with expense_item_id, try fallback approach
                     if (!$appropriation && isset($expense['expense_item_id'])) {
                         \Log::info('Reimbursement: No appropriation found with expense_item_id, trying fallback approach');
-                        
+
                         // Try to find appropriation by matching expense hierarchy more flexibly
                         $fallbackQuery = TranAppropriation::where('barangay_id', $barangayId)
                             ->where('status', 'committed');
-                            
+
                         if (isset($expense['expense_class_id'])) {
                             $fallbackQuery->where('expense_class_id', $expense['expense_class_id']);
                         }
@@ -506,9 +583,9 @@ class DisbursementController extends Controller
                             $fallbackQuery->where('expense_type_id', $expense['expense_type_id']);
                         }
                         // Don't filter by expense_item_id in fallback - try type level first
-                        
+
                         $appropriation = $fallbackQuery->first();
-                        
+
                         \Log::info('Reimbursement: Fallback appropriation lookup result', [
                             'appropriation_found' => $appropriation ? true : false,
                             'appropriation_id' => $appropriation ? $appropriation->id : null,
@@ -520,13 +597,13 @@ class DisbursementController extends Controller
                         // BUDGET VALIDATION: Check if there's enough budget for reimbursement
                         $requiredAmount = floatval($expense['amount']);
                         $availableBudget = $this->calculateAvailableBudget($appropriation->id);
-                        
+
                         \Log::info('Reimbursement: Budget validation', [
                             'appropriation_id' => $appropriation->id,
                             'required_amount' => $requiredAmount,
                             'available_budget' => $availableBudget
                         ]);
-                        
+
                         if ($availableBudget < $requiredAmount) {
                             return response()->json([
                                 'status' => false,
@@ -543,6 +620,8 @@ class DisbursementController extends Controller
                             'appropriation_id' => $appropriation->id,
                             'amount' => $expense['amount'],
                             'particulars' => $expense['particular'] ?? '',
+                            'cheque_number' => $expense['cheque_number'] ?? null,
+                            'bank_id' => $expense['bank_id'] ?? null,
                         ]);
 
                         // Prepare log line per expense
@@ -558,7 +637,7 @@ class DisbursementController extends Controller
                             'expense' => $expense,
                             'barangay_id' => $barangayId
                         ]);
-                        
+
                         return response()->json([
                             'status' => false,
                             'message' => 'No committed appropriation found for the selected expense account.',
@@ -602,7 +681,6 @@ class DisbursementController extends Controller
                 'message' => 'Reimbursement created successfully',
                 'data' => $reimbursement
             ], 201);
-
         } catch (\Exception $e) {
             \Log::error('Error saving OR details: ' . $e->getMessage());
             return response()->json([
@@ -727,7 +805,6 @@ class DisbursementController extends Controller
                     'orDetails' => DisbursementOrDetail::where('disbursement_id', $id)->get()
                 ]
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error saving OR details: ' . $e->getMessage());
             return response()->json([
@@ -764,7 +841,6 @@ class DisbursementController extends Controller
                 'status' => false,
                 'message' => 'No photo provided'
             ], 400);
-
         } catch (\Exception $e) {
             \Log::error('Error uploading OR photo: ' . $e->getMessage());
             return response()->json([
@@ -798,7 +874,6 @@ class DisbursementController extends Controller
                 'status' => false,
                 'message' => 'Photo not found'
             ], 404);
-
         } catch (\Exception $e) {
             \Log::error('Error deleting OR photo: ' . $e->getMessage());
             return response()->json([
@@ -848,11 +923,11 @@ class DisbursementController extends Controller
             // Case 2: this record is the original (another record references it)
             elseif (
                 $linked = Disbursement::with(['bank', 'cheque.booklet', 'expenseDetails.appropriation.expenseClass', 'expenseDetails.appropriation.expenseType', 'expenseDetails.appropriation.expenseItem', 'expenseDetails.appropriation.expenseSubItem'])
-                    ->when($user && isset($user->barangay_id), function ($q) use ($user) {
-                        $q->where('barangay_id', $user->barangay_id);
-                    })
-                    ->where('ref_dv_number', $disbursement->dv_number)
-                    ->first()
+                ->when($user && isset($user->barangay_id), function ($q) use ($user) {
+                    $q->where('barangay_id', $user->barangay_id);
+                })
+                ->where('ref_dv_number', $disbursement->dv_number)
+                ->first()
             ) {
                 $reimbursement = $linked; // that linked record is the reimbursement
                 // $disbursement stays as is
@@ -939,10 +1014,9 @@ class DisbursementController extends Controller
                 'status' => true,
                 'data' => $data
             ]);
-
         } catch (\Exception $e) {
             \Log::error("Error fetching disbursement: " . $e->getMessage());
-            return response()->json(['error' => 'Internal server error'. $e->getMessage()], 500);
+            return response()->json(['error' => 'Internal server error' . $e->getMessage()], 500);
         }
     }
 
@@ -997,15 +1071,15 @@ class DisbursementController extends Controller
                 'dv_number' => $request->dv_number,
                 'dv_amount' => $request->dv_amount,
             ]);
-            if($request->cancel){
+            if ($request->cancel) {
                 $disbursement->update([
                     'cheque_number' => $request->cheque_number,
                     'bank_id' => $request->bank_id,
                     'payee' => $request->payee,
                 ]);
-                $cheque=LibCheque::where('disbursement_id', $id)
+                $cheque = LibCheque::where('disbursement_id', $id)
                     ->first();
-                    
+
                 if ($cheque) {
                     $cheque->status = 'cancelled';
                     $cheque->save();
@@ -1069,6 +1143,8 @@ class DisbursementController extends Controller
                                 'appropriation_id' => $appropriation->id,
                                 'amount' => $expense['amount'],
                                 'particulars' => $expense['particular'] ?? '',
+                                'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+                                'bank_id' => $expense['bank_id'] ?? null,
                             ]);
 
                             // Log edit specifics
@@ -1099,11 +1175,14 @@ class DisbursementController extends Controller
                                 'appropriation_id' => $appropriation->id,
                                 'amount' => $expense['amount'],
                                 'particulars' => $expense['particular'] ?? '',
+                                'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+                                'bank_id' => $expense['bank_id'] ?? null,
                             ]);
 
                             // Log added expense account
                             $accountName = $this->getAccountNameFromAppropriationId($appropriation->id);
-                            $expenseAddedLogs[] = sprintf('%s amount ₱%s%s',
+                            $expenseAddedLogs[] = sprintf(
+                                '%s amount ₱%s%s',
                                 $accountName,
                                 number_format((float)$expense['amount'], 2),
                                 isset($expense['particular']) && $expense['particular'] !== '' ? ' | Particulars: "' . $expense['particular'] . '"' : ''
@@ -1123,7 +1202,8 @@ class DisbursementController extends Controller
                     $detail = $existingExpenseDetailMap[$delId] ?? null;
                     if ($detail) {
                         $accountName = $this->getAccountNameFromAppropriationId($detail->appropriation_id);
-                        $expenseDeletedLogs[] = sprintf('%s amount ₱%s%s',
+                        $expenseDeletedLogs[] = sprintf(
+                            '%s amount ₱%s%s',
                             $accountName,
                             number_format((float)$detail->amount, 2),
                             $detail->particulars ? ' | Particulars: "' . $detail->particulars . '"' : ''
@@ -1135,10 +1215,18 @@ class DisbursementController extends Controller
                 // Build unified log message for expense changes and top-level updates
                 $topLevelChanges = [];
                 $amountChange = null;
-                if ($prev['dv_number'] !== $disbursement->dv_number) { $topLevelChanges[] = sprintf('DV# %s → %s', $prev['dv_number'], $disbursement->dv_number); }
-                if ($prev['payee'] !== $disbursement->payee) { $topLevelChanges[] = sprintf('Payee %s → %s', $prev['payee'], $disbursement->payee); }
-                if ($prev['date'] !== $disbursement->date) { $topLevelChanges[] = sprintf('Date %s → %s', $prev['date'], $disbursement->date); }
-                if ((float)$prev['dv_amount'] !== (float)$disbursement->dv_amount) { $amountChange = sprintf('Overall Amount ₱%s → ₱%s', number_format((float)$prev['dv_amount'], 2), number_format((float)$disbursement->dv_amount, 2)); }
+                if ($prev['dv_number'] !== $disbursement->dv_number) {
+                    $topLevelChanges[] = sprintf('DV# %s → %s', $prev['dv_number'], $disbursement->dv_number);
+                }
+                if ($prev['payee'] !== $disbursement->payee) {
+                    $topLevelChanges[] = sprintf('Payee %s → %s', $prev['payee'], $disbursement->payee);
+                }
+                if ($prev['date'] !== $disbursement->date) {
+                    $topLevelChanges[] = sprintf('Date %s → %s', $prev['date'], $disbursement->date);
+                }
+                if ((float)$prev['dv_amount'] !== (float)$disbursement->dv_amount) {
+                    $amountChange = sprintf('Overall Amount ₱%s → ₱%s', number_format((float)$prev['dv_amount'], 2), number_format((float)$disbursement->dv_amount, 2));
+                }
 
                 $parts = [];
                 if (!empty($topLevelChanges)) {
@@ -1176,7 +1264,6 @@ class DisbursementController extends Controller
                 'message' => 'Disbursement updated successfully',
                 'data' => $disbursement
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error updating disbursement: ' . $e->getMessage());
             return response()->json([
@@ -1246,7 +1333,6 @@ class DisbursementController extends Controller
                 'status' => true,
                 'message' => 'OR Detail deleted successfully'
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error deleting OR detail: ' . $e->getMessage());
             return response()->json([
@@ -1298,7 +1384,6 @@ class DisbursementController extends Controller
                 'status' => true,
                 'message' => 'Disbursement deleted successfully'
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error deleting disbursement: ' . $e->getMessage());
             return response()->json([
@@ -1386,9 +1471,9 @@ class DisbursementController extends Controller
 
             // Check if user has approval role (Captain or Chairperson)
             $canApprove = strpos($position, 'captain') !== false ||
-                         strpos($position, 'chairperson') !== false ||
-                         strpos($position, 'barangay captain') !== false ||
-                         strpos($position, 'sk chairperson') !== false;
+                strpos($position, 'chairperson') !== false ||
+                strpos($position, 'barangay captain') !== false ||
+                strpos($position, 'sk chairperson') !== false;
 
             if (!$canApprove) {
                 \Log::warning('User not authorized for void approval. Position: ' . $positionName);
@@ -1467,9 +1552,9 @@ class DisbursementController extends Controller
 
             // Check if user has approval role (Captain or Chairperson)
             $canReject = strpos($position, 'captain') !== false ||
-                        strpos($position, 'chairperson') !== false ||
-                        strpos($position, 'barangay captain') !== false ||
-                        strpos($position, 'sk chairperson') !== false;
+                strpos($position, 'chairperson') !== false ||
+                strpos($position, 'barangay captain') !== false ||
+                strpos($position, 'sk chairperson') !== false;
 
             if (!$canReject) {
                 \Log::warning('User not authorized for void rejection. Position: ' . $positionName);
@@ -1533,9 +1618,9 @@ class DisbursementController extends Controller
 
             // Check if user has approval role (Captain or Chairperson)
             $canVoidDirectly = strpos($position, 'captain') !== false ||
-                              strpos($position, 'chairperson') !== false ||
-                              strpos($position, 'barangay captain') !== false ||
-                              strpos($position, 'sk chairperson') !== false;
+                strpos($position, 'chairperson') !== false ||
+                strpos($position, 'barangay captain') !== false ||
+                strpos($position, 'sk chairperson') !== false;
 
             if (!$canVoidDirectly) {
                 \Log::warning('User not authorized for direct void. Position: ' . $positionName);
@@ -1669,9 +1754,9 @@ class DisbursementController extends Controller
             $position = strtolower($positionName);
 
             $canApprove = strpos($position, 'captain') !== false ||
-                          strpos($position, 'chairperson') !== false ||
-                          strpos($position, 'barangay captain') !== false ||
-                          strpos($position, 'sk chairperson') !== false;
+                strpos($position, 'chairperson') !== false ||
+                strpos($position, 'barangay captain') !== false ||
+                strpos($position, 'sk chairperson') !== false;
 
             if (!$canApprove) {
                 return response()->json([
@@ -1729,9 +1814,9 @@ class DisbursementController extends Controller
             $position = strtolower($positionName);
 
             $canReject = strpos($position, 'captain') !== false ||
-                         strpos($position, 'chairperson') !== false ||
-                         strpos($position, 'barangay captain') !== false ||
-                         strpos($position, 'sk chairperson') !== false;
+                strpos($position, 'chairperson') !== false ||
+                strpos($position, 'barangay captain') !== false ||
+                strpos($position, 'sk chairperson') !== false;
 
             if (!$canReject) {
                 return response()->json([
@@ -1790,7 +1875,7 @@ class DisbursementController extends Controller
             }
 
             if ($targetBarangayId) {
-                $query->whereHas('appropriation', function($q) use ($targetBarangayId) {
+                $query->whereHas('appropriation', function ($q) use ($targetBarangayId) {
                     $q->where('barangay_id', $targetBarangayId);
                 });
             }
@@ -1804,20 +1889,20 @@ class DisbursementController extends Controller
                 // normalize date format
                 $fromDate = str_replace('/', '-', $from);
                 $toDate = str_replace('/', '-', $to);
-                $query->whereHas('disbursement', function($q) use ($fromDate, $toDate) {
+                $query->whereHas('disbursement', function ($q) use ($fromDate, $toDate) {
                     $q->whereBetween('date', [$fromDate, $toDate]);
                 });
             }
 
             if ($expenseClassId) {
-                $query->whereHas('appropriation', function($q) use ($expenseClassId) {
+                $query->whereHas('appropriation', function ($q) use ($expenseClassId) {
                     $q->where('expense_class_id', $expenseClassId);
                 });
             }
 
             $expenseDetails = $query->get();
 
-            $result = $expenseDetails->map(function($detail) {
+            $result = $expenseDetails->map(function ($detail) {
                 $expenseClassName = optional($detail->appropriation->expenseClass)->name;
                 $expenseTypeName = optional($detail->appropriation->expenseType)->name;
                 $expenseItemName = optional($detail->appropriation->expenseItem)->name;
@@ -1856,7 +1941,6 @@ class DisbursementController extends Controller
                 'status' => true,
                 'data' => $result
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error fetching expense details: ' . $e->getMessage());
             return response()->json([
@@ -2027,7 +2111,6 @@ class DisbursementController extends Controller
                     'expense_item_id' => $appropriation->expense_item_id,
                 ]
             ], 201);
-
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error('Error creating expense detail: ' . $e->getMessage());
@@ -2052,7 +2135,7 @@ class DisbursementController extends Controller
 
             // Find the expense detail and ensure it belongs to the user's barangay
             $expenseDetail = TranExpenseDetail::where('id', $id)
-                ->whereHas('appropriation', function($q) use ($user) {
+                ->whereHas('appropriation', function ($q) use ($user) {
                     $q->where('barangay_id', $user->barangay_id);
                 })
                 ->firstOrFail();
@@ -2066,7 +2149,6 @@ class DisbursementController extends Controller
                 'message' => 'Expense detail updated successfully',
                 'data' => $expenseDetail
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error updating expense detail: ' . $e->getMessage());
             return response()->json([
@@ -2085,7 +2167,7 @@ class DisbursementController extends Controller
 
             // Find the expense detail and ensure it belongs to the user's barangay
             $expenseDetail = TranExpenseDetail::where('id', $id)
-                ->whereHas('appropriation', function($q) use ($user) {
+                ->whereHas('appropriation', function ($q) use ($user) {
                     $q->where('barangay_id', $user->barangay_id);
                 })
                 ->firstOrFail();
@@ -2104,7 +2186,6 @@ class DisbursementController extends Controller
                 'status' => true,
                 'message' => 'Expense detail deleted successfully'
             ]);
-
         } catch (\Exception $e) {
             \Log::error('Error deleting expense detail: ' . $e->getMessage());
             return response()->json([
@@ -2122,21 +2203,47 @@ class DisbursementController extends Controller
         $mm = str_pad($today->month, 2, '0', STR_PAD_LEFT);
         $yyyy = $today->year;
 
-        $likePattern = 'DV-'.substr($yyyy, -2).'-'.$mm.'-%';
+        $likePattern = 'DV-' . substr($yyyy, -2) . '-' . $mm . '-%';
 
-        $lastDisbursements = Disbursement::withoutGlobalScopes();
-        $lastDisbursement=$lastDisbursements->where('dv_number', 'like', $likePattern)->orderByDesc('dv_number')->first();
-
+        // Check across all three tables
         $lastSequence = 0;
-        if ($lastDisbursement) {
-            $dv = $lastDisbursement->dv_number;
-            $segments = explode('-', $dv);
+
+        $lastDisbursement = \App\Models\Disbursement::withoutGlobalScopes()
+            ->where('dv_number', 'like', $likePattern)
+            ->orderByDesc('dv_number')
+            ->first();
+
+        $lastBir = \App\Models\BirRemittance::where('dv_number', 'like', $likePattern)
+            ->orderByDesc('dv_number')
+            ->first();
+
+        $lastFt = \App\Models\FundTransfer::where('dv_number', 'like', $likePattern)
+            ->orderByDesc('dv_number')
+            ->first();
+
+        // Extract sequence numbers from each and pick the highest
+        $extractSeq = function ($record) {
+            if (!$record) return 0;
+            $segments = explode('-', $record->dv_number);
             if (count($segments) === 4) {
-                $lastSegment = $segments[3];
-                $lastSequence = (int)$lastSegment;
+                return (int) $segments[3];
             }
-        }
-        $newDvNumber = sprintf('DV-%s-%s-%s', substr($yyyy, -2), $mm, str_pad($lastSequence + 1, 3, '0', STR_PAD_LEFT));
+            return 0;
+        };
+
+        $lastSequence = max(
+            $extractSeq($lastDisbursement),
+            $extractSeq($lastBir),
+            $extractSeq($lastFt)
+        );
+
+        $newDvNumber = sprintf(
+            'DV-%s-%s-%s',
+            substr($yyyy, -2),
+            $mm,
+            str_pad($lastSequence + 1, 3, '0', STR_PAD_LEFT)
+        );
+
         return response()->json([
             'status' => true,
             'data' => [
@@ -2144,7 +2251,6 @@ class DisbursementController extends Controller
                 'dv_number' => $newDvNumber,
             ]
         ]);
-
     }
 
     /**
