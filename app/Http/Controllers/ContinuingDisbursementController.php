@@ -33,6 +33,7 @@ class ContinuingDisbursementController extends Controller
                 'bank' => $disbursement->bank ? $disbursement->bank->bank_name : 'N/A',
                 'bank_id' => $disbursement->bank_id,
                 'payee' => $disbursement->payee,
+                'payee2' => $disbursement->payee2,
                 'dvAmount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -71,6 +72,7 @@ class ContinuingDisbursementController extends Controller
                 'chequeNumber' => 'required|string|max:255',
                 'bank_id' => 'required|exists:lib_banks,id',
                 'payee' => 'required|string|max:255',
+                'payee2' => 'required|string|max:255',
                 'amount' => 'required|numeric|min:0',
                 'expenses' => 'required|array|min:1',
                 'expenses.*.accountId' => 'required|exists:cont_appro_accounts,id',
@@ -100,6 +102,7 @@ class ContinuingDisbursementController extends Controller
                 'cheque_number' => $validated['chequeNumber'],
                 'bank_id' => $validated['bank_id'],
                 'payee' => $validated['payee'],
+                'payee2' => $validated['payee2'],
                 'dv_amount' => $validated['amount'],
                 'status' => 'Unliquidated',
                 'user_id' => $request->user()->id,
@@ -181,6 +184,7 @@ class ContinuingDisbursementController extends Controller
             'bank' => $disbursement->bank ? $disbursement->bank->bank_name : 'N/A',
             'bank_id' => $disbursement->bank_id,
             'payee' => $disbursement->payee,
+            'payee2' => $disbursement->payee2,
             'dvAmount' => $disbursement->dv_amount,
             'status' => $disbursement->status,
             'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -222,6 +226,7 @@ class ContinuingDisbursementController extends Controller
             'chequeNumber' => 'required|string|max:255',
             'bank_id' => 'required|exists:lib_banks,id',
             'payee' => 'required|string|max:255',
+            'payee2' => 'required|string|max:255',
             'amount' => 'required|numeric|min:0',
             'expenses' => 'required|array|min:1',
             'expenses.*.accountId' => 'required|exists:cont_appro_accounts,id',
@@ -239,6 +244,7 @@ class ContinuingDisbursementController extends Controller
                 'cheque_number' => $validated['chequeNumber'],
                 'bank_id' => $validated['bank_id'],
                 'payee' => $validated['payee'],
+                'payee2' => $validated['payee2'],
                 'dv_amount' => $validated['amount'],
             ]);
 

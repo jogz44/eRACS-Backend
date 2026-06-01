@@ -95,6 +95,7 @@ class ReportController extends Controller
                         'dvNumber' => $disb?->dv_number,
                         'date' => $disb?->date,
                         'payee'    => $disb?->payee,
+                        'payee2'    => $disb?->payee2,
                         'dvAmount' => (float) ($disb?->dv_amount ?? 0), // DV amount for appropriation column
                         'amount'   => (float) ($detail?->amount ?? 0),
                     ];
@@ -129,6 +130,7 @@ class ReportController extends Controller
                     'dvNumber' => $firstItem['dvNumber'],
                     'date' => $firstItem['date'],
                     'payee' => $firstItem['payee'],
+                    'payee2' => $firstItem['payee2'],
                     'amount' => $group->sum('amount'), // Sum all amounts for this DV
                     'appropriation' => $classAppropriation, // Use the class-specific total amount
                 ];

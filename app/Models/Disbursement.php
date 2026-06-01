@@ -21,6 +21,7 @@ class Disbursement extends Model
         'cheque_number',
         'bank_id',
         'payee',
+        'payee2',
         'dv_amount',
         'status',
         'liquidated_amount',

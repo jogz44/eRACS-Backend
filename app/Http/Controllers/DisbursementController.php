@@ -81,6 +81,7 @@ class DisbursementController extends Controller
                 'bank_id' => $d->bank_id,
                 'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
+                'payee2' => $d->payee2,
                 'dv_amount' => $d->dv_amount,
                 'status' => $d->status,
                 'remarks' => $d->remarks,
@@ -116,6 +117,7 @@ class DisbursementController extends Controller
                 'bank_id' => $d->bank_id,
                 'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
+                'payee2' => $d->payee2,
                 'dv_amount' => $d->dv_amount,
                 'status' => $d->status,
                 'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
@@ -148,6 +150,7 @@ class DisbursementController extends Controller
             'cheque_number' => 'required|string',
             'bank_id' => 'required|exists:lib_banks,id',
             'payee' => 'required|string',
+            'payee2' => 'required|string',
             'dv_amount' => 'required|numeric|min:0',
             'expenses' => 'array',
             'expenses.*.accountId' => 'required|integer',
@@ -179,6 +182,7 @@ class DisbursementController extends Controller
                 'cheque_number' => $request->cheque_number,
                 'bank_id' => $request->bank_id,
                 'payee' => $request->payee,
+                'payee2' => $request->payee2,
                 'dv_amount' => $request->dv_amount,
                 'status' => 'Unliquidated',
             ]);
@@ -293,6 +297,7 @@ class DisbursementController extends Controller
             'cheque_number' => 'required|string',
             'bank_id' => 'required|exists:lib_banks,id',
             'payee' => 'required|string',
+            'payee2' => 'required|string',
             'dv_amount' => 'required|numeric|min:0',
 
             'expenses' => 'array',
@@ -412,6 +417,7 @@ class DisbursementController extends Controller
                 'cheque_number' => $request->cheque_number,
                 'bank_id' => $request->bank_id,
                 'payee' => $request->payee,
+                'payee2' => $request->payee2,
                 'dv_amount' => $request->dv_amount,
                 'status' => 'Liquidated',
             ]);
@@ -444,7 +450,7 @@ class DisbursementController extends Controller
                         ->where('expense_class_id', $expense['expense_class_id'])
                         ->where('expense_type_id', $expense['expense_type_id'])
                         ->get(['id', 'expense_class_id', 'expense_type_id', 'expense_item_id', 'expense_sub_item_id', 'amount']);
-                    
+
                     \Log::info('Reimbursement: All appropriations for this expense hierarchy', [
                         'expense_class_id' => $expense['expense_class_id'],
                         'expense_type_id' => $expense['expense_type_id'],
@@ -468,7 +474,7 @@ class DisbursementController extends Controller
                     }
 
                     $appropriation = $appropriationQuery->first();
-                    
+
                     \Log::info('Reimbursement: Appropriation lookup result', [
                         'appropriation_found' => $appropriation ? true : false,
                         'appropriation_id' => $appropriation ? $appropriation->id : null,
@@ -480,15 +486,15 @@ class DisbursementController extends Controller
                             'expense_sub_item_id' => $appropriation->expense_sub_item_id
                         ] : null
                     ]);
-                    
+
                     // If no appropriation found with expense_item_id, try fallback approach
                     if (!$appropriation && isset($expense['expense_item_id'])) {
                         \Log::info('Reimbursement: No appropriation found with expense_item_id, trying fallback approach');
-                        
+
                         // Try to find appropriation by matching expense hierarchy more flexibly
                         $fallbackQuery = TranAppropriation::where('barangay_id', $barangayId)
                             ->where('status', 'committed');
-                            
+
                         if (isset($expense['expense_class_id'])) {
                             $fallbackQuery->where('expense_class_id', $expense['expense_class_id']);
                         }
@@ -496,9 +502,9 @@ class DisbursementController extends Controller
                             $fallbackQuery->where('expense_type_id', $expense['expense_type_id']);
                         }
                         // Don't filter by expense_item_id in fallback - try type level first
-                        
+
                         $appropriation = $fallbackQuery->first();
-                        
+
                         \Log::info('Reimbursement: Fallback appropriation lookup result', [
                             'appropriation_found' => $appropriation ? true : false,
                             'appropriation_id' => $appropriation ? $appropriation->id : null,
@@ -510,13 +516,13 @@ class DisbursementController extends Controller
                         // BUDGET VALIDATION: Check if there's enough budget for reimbursement
                         $requiredAmount = floatval($expense['amount']);
                         $availableBudget = $this->calculateAvailableBudget($appropriation->id);
-                        
+
                         \Log::info('Reimbursement: Budget validation', [
                             'appropriation_id' => $appropriation->id,
                             'required_amount' => $requiredAmount,
                             'available_budget' => $availableBudget
                         ]);
-                        
+
                         if ($availableBudget < $requiredAmount) {
                             return response()->json([
                                 'status' => false,
@@ -548,7 +554,7 @@ class DisbursementController extends Controller
                             'expense' => $expense,
                             'barangay_id' => $barangayId
                         ]);
-                        
+
                         return response()->json([
                             'status' => false,
                             'message' => 'No committed appropriation found for the selected expense account.',
@@ -866,6 +872,7 @@ class DisbursementController extends Controller
                 'bank_name' => $disbursement->bank ? $disbursement->bank->bank_name : null,
                 'booklet_id' => $disbursement->cheque ? $disbursement->cheque->booklet_id : null,
                 'payee' => $disbursement->payee,
+                'payee2' => $disbursement->payee2,
                 'dv_amount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -902,6 +909,7 @@ class DisbursementController extends Controller
                     'bank_name' => $reimbursement->bank ? $reimbursement->bank->bank_name : null,
                     'booklet_id' => $reimbursement->cheque ? $reimbursement->cheque->booklet_id : null,
                     'payee' => $reimbursement->payee,
+                    'payee2' => $reimbursement->payee2,
                     'dv_amount' => $reimbursement->dv_amount,
                     'status' => $reimbursement->status,
                     'expenses' => $reimbursement->expenseDetails->map(function ($detail) {
@@ -944,6 +952,7 @@ class DisbursementController extends Controller
             'bank_id'       => 'required_if:cancel,true|exists:lib_banks,id',
             'cheque_number' => 'required_if:cancel,true|string',
             'payee'         => 'required_if:cancel,true|string',
+            'payee2'         => 'required_if:cancel,true|string',
 
 
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
@@ -978,6 +987,7 @@ class DisbursementController extends Controller
                 'cheque_number' => $disbursement->cheque_number,
                 'bank_id' => $disbursement->bank_id,
                 'payee' => $disbursement->payee,
+                'payee2' => $disbursement->payee2,
                 'dv_amount' => $disbursement->dv_amount,
             ];
 
@@ -992,10 +1002,11 @@ class DisbursementController extends Controller
                     'cheque_number' => $request->cheque_number,
                     'bank_id' => $request->bank_id,
                     'payee' => $request->payee,
+                    'payee2' => $request->payee2,
                 ]);
                 $cheque=LibCheque::where('disbursement_id', $id)
                     ->first();
-                    
+
                 if ($cheque) {
                     $cheque->status = 'cancelled';
                     $cheque->save();
@@ -1836,6 +1847,7 @@ class DisbursementController extends Controller
                     'dvNumber' => optional($detail->disbursement)->dv_number,
                     'dv_number' => optional($detail->disbursement)->dv_number,
                     'payee' => optional($detail->disbursement)->payee,
+                    'payee2' => optional($detail->disbursement)->payee2,
                     'accountTitle' => $accountTitle,
                     'created_at' => $detail->created_at,
                     'updated_at' => $detail->updated_at,
