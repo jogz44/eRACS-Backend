@@ -153,8 +153,8 @@ public function createBank(Request $request)
 
         AdminAuthController::logUserAction(Auth::guard('barangay')->user(), 'Bank Deletion', 'Bank ' . $bankName . ' has been deleted.');
 
-    $this->updateBanksStatus();
-        return response()->json(['message' => 'Bank deleted successfully']);
+        $this->updateBanksStatus();
+            return response()->json(['message' => 'Bank deleted successfully']);
     }
 
     /**

@@ -200,15 +200,26 @@ class BudgetAugmentationController extends Controller
     /**
      * Display a listing of budget augmentations
      */
-    public function index(Request $request)
-    {
-        try {
-            $query = BudgetAugmentation::with([
-                'budget', 
-                'details.fromAppropriation', 
-                'details.toAppropriation',
-                'barangay'
-            ])->forBarangay($request->user()->barangay_id);
+public function index(Request $request)
+{
+    try {
+        $query = BudgetAugmentation::with([
+            'budget', 
+            'details.fromAppropriation', 
+            'details.toAppropriation',
+            'barangay'
+        ])->forBarangay($request->user()->barangay_id);
+
+        // Add year filter
+        if ($request->filled('year')) {
+            $query->whereHas('budget.fiscalYear', function($q) use ($request) {
+                $q->where('year', $request->year);
+            });
+        } else {
+            $query->whereHas('budget.fiscalYear', function($q) {
+                $q->where('year', now()->year);
+            });
+        }
 
             // Apply filters
             if ($request->filled('search')) {
@@ -260,7 +271,7 @@ class BudgetAugmentationController extends Controller
     /**
      * Admin endpoint to fetch augmentations across all barangays
      */
-    public function adminIndex(Request $request)
+        public function adminIndex(Request $request)
     {
         try {
             $query = BudgetAugmentation::with([
@@ -275,12 +286,23 @@ class BudgetAugmentationController extends Controller
                 $query->where('barangay_id', $request->barangay_id);
             }
 
-            // Apply filters
+            // Add year filter via the budget's fiscal year
+            if ($request->filled('year')) {
+                $query->whereHas('budget.fiscalYear', function($q) use ($request) {
+                    $q->where('year', $request->year);
+                });
+            } else {
+                $query->whereHas('budget.fiscalYear', function($q) {
+                    $q->where('year', now()->year);
+                });
+            }
+
+            // Apply existing filters
             if ($request->filled('search')) {
                 $search = $request->search;
                 $query->where(function($q) use ($search) {
                     $q->where('ref_number', 'like', "%{$search}%")
-                      ->orWhere('remarks', 'like', "%{$search}%");
+                    ->orWhere('remarks', 'like', "%{$search}%");
                 });
             }
 

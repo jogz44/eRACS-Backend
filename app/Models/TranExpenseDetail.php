@@ -13,6 +13,8 @@ class TranExpenseDetail extends Model
     protected $fillable = [
         'disbursement_id',
         'appropriation_id',
+        'bank_id',
+        'cheque_number',
         'amount',
         'particulars',
     ];
@@ -35,5 +37,10 @@ class TranExpenseDetail extends Model
     public function appropriation()
     {
         return $this->belongsTo(TranAppropriation::class, 'appropriation_id');
+    }
+
+    public function bank()
+    {
+        return $this->belongsTo(LibBank::class, 'bank_id');
     }
 }

@@ -10,69 +10,51 @@ use App\Models\Barangay;
 
 class TranExpenseDetailSeeder extends Seeder
 {
-    public function run()
+    public function run(): void
     {
-        // Generate expense details for all barangays that have both disbursements and appropriations
-        $expenseDetails = [];
-
         foreach (Barangay::all() as $barangay) {
             $disbursements = Disbursement::where('barangay_id', $barangay->id)->get();
+
             if ($disbursements->isEmpty()) {
-                $this->command->warn("No disbursements found for Barangay {$barangay->name}. Skipping.");
+                $this->command->warn("No disbursements found for {$barangay->name}. Skipping.");
                 continue;
             }
 
-            $appropriations = TranAppropriation::where('barangay_id', $barangay->id)->get();
+            $appropriations = TranAppropriation::where('barangay_id', $barangay->id)
+                ->where('status', 'committed')
+                ->get();
+
             if ($appropriations->isEmpty()) {
-                $this->command->warn("No appropriations found for Barangay {$barangay->name}. Skipping.");
+                $this->command->warn("No committed appropriations found for {$barangay->name}. Skipping.");
                 continue;
             }
 
             foreach ($disbursements as $disbursement) {
-                // Create expense details that match the disbursement amount
-                // Each disbursement has a specific dv_amount, so we'll split it among appropriations
-                $remainingAmount = $disbursement->dv_amount;
-                $numExpenses = rand(1, 3); // 1-3 expense details per disbursement
-                $usedAppropriations = [];
+                $alreadyHasDetails = TranExpenseDetail::where('disbursement_id', $disbursement->id)->exists();
 
-                for ($i = 0; $i < $numExpenses && $remainingAmount > 0; $i++) {
-                    // Get a random appropriation that hasn't been used for this disbursement
-                    $availableAppropriations = $appropriations->whereNotIn('id', $usedAppropriations);
-                    if ($availableAppropriations->isEmpty()) {
-                        break;
-                    }
-
-                    $appropriation = $availableAppropriations->random();
-                    $usedAppropriations[] = $appropriation->id;
-
-                    // Calculate amount for this expense detail
-                    if ($i === $numExpenses - 1) {
-                        // Last expense detail gets the remaining amount
-                        $amount = $remainingAmount;
-                    } else {
-                        // Distribute amount evenly among expense details
-                        $amount = round($remainingAmount / ($numExpenses - $i), 2);
-                    }
-
-                    if ($amount > 0) {
-                        $expenseDetails[] = [
-                            'disbursement_id' => $disbursement->id,
-                            'appropriation_id' => $appropriation->id,
-                            'amount' => $amount,
-                            'particulars' => 'Expense detail ' . ($i + 1) . ' for ' . $disbursement->dv_number . ' - ' . ($appropriation->expense_item_id ? 'Item level' : 'Type level'),
-                            'created_at' => $disbursement->created_at,
-                            'updated_at' => $disbursement->updated_at,
-                        ];
-
-                        $remainingAmount -= $amount;
-                    }
+                if ($alreadyHasDetails) {
+                    continue;
                 }
-            }
-        }
 
-        // Insert all expense details
-        if (!empty($expenseDetails)) {
-            TranExpenseDetail::insert($expenseDetails);
+                $amount = (float) $disbursement->dv_amount;
+
+                if ($amount <= 0) {
+                    continue;
+                }
+
+                $appropriation = $appropriations->random();
+
+                TranExpenseDetail::create([ 
+                    'disbursement_id' => $disbursement->id,
+                    'appropriation_id' => $appropriation->id,
+                    'amount' => $amount,
+                    'particulars' => 'Migrated expense detail sample',
+                    'bank_id' => $disbursement->bank_id,    
+                    'cheque_number' => $disbursement->cheque_number,
+                    'created_at' => $disbursement->created_at,
+                    'updated_at' => $disbursement->updated_at,
+                ]);
+            }
         }
     }
 }
