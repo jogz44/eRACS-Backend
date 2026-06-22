@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use App\Models\Concerns\ScopesBarangay as BarangayScope;
+use App\Models\Deduction;
 
 class Disbursement extends Model
 {
@@ -54,6 +55,11 @@ class Disbursement extends Model
     public function expenseDetails()
     {
         return $this->hasMany(TranExpenseDetail::class, 'disbursement_id');
+    }
+
+    public function deductions()
+    {
+        return $this->hasMany(Deduction::class, 'disbursement_id');
     }
 
     public function cheque()

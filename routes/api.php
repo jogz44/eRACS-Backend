@@ -20,6 +20,7 @@ use App\Models\BarangayPosition;
 use App\Models\Admin;
 use App\Http\Controllers\OtpController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\DeductionController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -124,18 +125,16 @@ Route::prefix('barangay')->group(function () {
         Route::get('/booklets/{bookletId}/cheques', [BankLibraryController::class, 'getBookletCheques'])
         ->where('bookletId', '[0-9]+'); // Ensure numeric ID only
 
-
-
         //Transaction Appropriation
         // Budget endpoints
         Route::get('budgets', [AppropriationController::class, 'index']);
         // Add this above your existing budget routes
         Route::post('budgets/create', [AppropriationController::class, 'storeBudget']);
             // Dashboard summary endpoint
-    Route::get('dashboard/summary', [AppropriationController::class, 'getDashboardSummary']);
+        Route::get('dashboard/summary', [AppropriationController::class, 'getDashboardSummary']);
 
-    // Debug endpoint for troubleshooting
-    Route::get('dashboard/debug', [AppropriationController::class, 'getDashboardDebug']);
+        // Debug endpoint for troubleshooting
+        Route::get('dashboard/debug', [AppropriationController::class, 'getDashboardDebug']);
         // Expense hierarchy
         Route::get('expense-hierarchy', [AppropriationController::class, 'getExpenseHierarchy']);
         // Appropriations for augmentation
@@ -180,6 +179,13 @@ Route::prefix('barangay')->group(function () {
         Route::post('disbursements/or-photo/upload', [DisbursementController::class, 'uploadOrPhoto']);
         // Delete OR photo
         Route::delete('disbursements/or-photo/delete', [DisbursementController::class, 'deleteOrPhoto']);
+
+        // DEDUCTIONS
+        Route::get('deductions', [DeductionController::class, 'index']);
+        Route::post('deductions', [DeductionController::class, 'store']);
+        Route::get('deductions/{id}', [DeductionController::class, 'show']);
+        Route::put('deductions/{id}', [DeductionController::class, 'update']);
+        Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
 
         // Expense Details endpoints
         Route::get('expense-details', [DisbursementController::class, 'getExpenseDetails']);
@@ -229,7 +235,7 @@ Route::prefix('barangay')->group(function () {
         Route::delete('/continuing-disbursements/{id}/or-details/{orDetailId}', [ContinuingDisbursementController::class, 'deleteOrDetail']);
         // Continuing Disbursement OR Photo Upload
         Route::post('/continuing-disbursements/or-photo/upload', [ContinuingDisbursementController::class, 'uploadOrPhoto']);
-    
+
         // BIR Remittances
         Route::get('bir-remittances', [BirRemittanceController::class, 'index']);
         Route::post('bir-remittances', [BirRemittanceController::class, 'store']);
@@ -248,14 +254,15 @@ Route::prefix('barangay')->group(function () {
         Route::post('fund-transfers/{id}/void-approve', [FundTransferController::class, 'approveVoid']);
         Route::post('fund-transfers/{id}/void-reject', [FundTransferController::class, 'rejectVoid']);
 
-        Route::get('/barangay/bir-remittances/pending-tax-total', 
+        Route::get('/barangay/bir-remittances/pending-tax-total',
     [BirRemittanceController::class, 'pendingTaxTotal']);
     });
 
 });
 
-Route::prefix('admin')->group(function () {
-    Route::post('/login', [AdminAuthController::class, 'login']);
+
+    Route::prefix('admin')->group(function () {
+        Route::post('/login', [AdminAuthController::class, 'login']);
 
 
     // Just use Sanctum's default auth
@@ -279,6 +286,26 @@ Route::prefix('admin')->group(function () {
 
         // Admin disbursement endpoints - view only
         Route::get('/disbursements', [DisbursementController::class, 'adminIndex']);
+
+        //GET /api/admin/disbursements/{id}/deductions
+        Route::get(
+            'disbursements/{id}/deductions',
+            [DeductionController::class, 'getByDisbursement']
+        );
+
+         // Admin fund-transfers and bir-remittances
+        Route::get('/fund-transfers', [FundTransferController::class, 'index']);
+        Route::get('/bir-remittances', [BirRemittanceController::class, 'index']);
+
+        // Deductions (Admin View)
+        Route::get('deductions', [DeductionController::class, 'index']);
+        Route::get('deductions/{id}', [DeductionController::class, 'show']);
+
+        // Admin should also create/edit/delete
+        // Route::post('deductions', [DeductionController::class, 'store']);
+        // Route::put('deductions/{id}', [DeductionController::class, 'update']);
+        // Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
+
         // Admin can fetch expense details for a selected barangay
         Route::get('/expense-details', [DisbursementController::class, 'getExpenseDetails']);
         // Admin can view OR details for any disbursement

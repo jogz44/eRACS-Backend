@@ -19,6 +19,10 @@ return [
 
         'allowed_origins' => [
             'http://10.0.1.23:3002',
+            'http://192.168.8.33:3001',
+            'http://localhost:9000',
+            'http://192.168.8.67:9000',  // sheena IP
+
         ],
 
         'allowed_origins_patterns' => [],
