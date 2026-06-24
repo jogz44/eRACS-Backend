@@ -18,6 +18,7 @@ class ContDisbursement extends Model
         'date',
         'dv_number',
         'cheque_number',
+        'cheque_date',
         'bank_id',
         'payee',
         'payee2',

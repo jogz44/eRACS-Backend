@@ -22,20 +22,65 @@ class DeductionController extends Controller
             'tax_type' => 'nullable|string',
             'code' => 'nullable|string',
 
-            'divisor' => 'required|numeric',
+            'divisor' => 'nullable|numeric|min:1',
 
-            'vat_percent' => 'nullable|numeric',
-            'ewt_percent' => 'nullable|numeric',
+            'vat_percent' => 'nullable|numeric|min:0',
+            'ewt_percent' => 'nullable|numeric|min:0',
 
             'description' => 'nullable|string',
 
-            'gross_vat_inc' => 'nullable|numeric',
-            'gross_vat_exc' => 'nullable|numeric',
-
-            'deduction_amount' => 'nullable|numeric'
+            // User enters amount only
+            'gross_vat_inc' => 'required|numeric|min:0',
         ]);
 
-        $deduction = Deduction::create($validated);
+        $amount =
+            (float) $validated['gross_vat_inc'];
+
+        $divisor =
+            (float) ($validated['divisor'] ?? 1);
+
+        $vat =
+            (float) ($validated['vat_percent'] ?? 0);
+
+        $ewt =
+            (float) ($validated['ewt_percent'] ?? 0);
+
+        /*
+        COMPUTE
+        */
+
+        $vatDeduction =
+            ($amount / $divisor)
+            * ($vat / 100);
+
+        $ewtDeduction =
+            ($amount / $divisor)
+            * ($ewt / 100);
+
+        $grossVatExc =
+            $amount - $vatDeduction;
+
+        $deductionAmount =
+            $vatDeduction + $ewtDeduction;
+
+        $netAmount =
+            $amount - $deductionAmount;
+
+        $validated['gross_vat_exc'] =
+            round($grossVatExc, 2);
+
+        $validated['deduction_amount'] =
+            round($deductionAmount, 2);
+
+        /*
+        OPTIONAL
+        */
+
+        $validated['net_amount'] =
+            round($netAmount, 2);
+
+        $deduction =
+            Deduction::create($validated);
 
         return response()->json([
             'status' => true,
@@ -47,6 +92,38 @@ class DeductionController extends Controller
     public function show($id)
     {
         return Deduction::findOrFail($id);
+    }
+
+    public function preview(Request $request)
+    {
+        $validated = $request->validate([
+
+            'gross_vat_inc' => 'required|numeric|min:0',
+            'divisor' => 'nullable|numeric|min:1',
+            'vat_percent' => 'nullable|numeric|min:0',
+            'ewt_percent' => 'nullable|numeric|min:0',
+
+        ]);
+
+        $amount = (float) $validated['gross_vat_inc'];
+        $divisor = (float) ( $validated['divisor'] ?? 1 );
+        $vat = (float) ( $validated['vat_percent'] ?? 0 );
+        $ewt = (float) ( $validated['ewt_percent'] ?? 0 );
+        $vatDeduction = ($amount / $divisor) * ($vat / 100);
+        $ewtDeduction = ($amount / $divisor) * ($ewt / 100);
+        $grossVatExc = $amount - $vatDeduction;
+        $deductionAmount = $vatDeduction + $ewtDeduction;
+        $netAmount = $amount - $deductionAmount;
+
+        return response()->json([
+            'status' => true,
+            'data' => [
+                'gross_vat_inc' => round( $amount, 2 ),
+                'gross_vat_exc' => round( $grossVatExc, 2 ),
+                'deduction_amount' => round( $deductionAmount, 2 ),
+                'net_amount' => round( $netAmount, 2 ),
+            ]
+        ]);
     }
 
     public function update(Request $request, $id)

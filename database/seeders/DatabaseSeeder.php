@@ -20,11 +20,13 @@ class DatabaseSeeder extends Seeder
             TranAppropriationSeeder::class,
             // BudgetAugmentationSeeder::class,
             BookletAndChequeSeeder::class,
-            DisbursementSeeder::class
+            DisbursementSeeder::class,
             // DisbursementAndDetailSeeder::class,
             // ContAppropriationSeeder::class,
             // ContDisbursementSeeder::class,
             // ContApproAccountSeeder::class,
+
+            DeductionCodeSeeder::class
         ]);
     }
 }

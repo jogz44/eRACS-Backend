@@ -8,18 +8,19 @@ class BirRemittance extends Model
 {
     protected $fillable = [
         'barangay_id',
-        'date', 
-        'dv_number', 
+        'date',
+        'dv_number',
         'ref_dv_number',
-        'cheque_number', 
-        'bank_id', 
-        'payee', 
+        'cheque_number',
+        'cheque_date',
+        'bank_id',
+        'payee',
         'dv_amount',
-        'liquidated_amount', 
-        'status', 
+        'liquidated_amount',
+        'status',
         'user_id',
-        'liquidated_at', 
-        'remarks', 
+        'liquidated_at',
+        'remarks',
         'rejection_remarks',
     ];
 

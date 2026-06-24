@@ -21,6 +21,8 @@ use App\Models\Admin;
 use App\Http\Controllers\OtpController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\DeductionController;
+use App\Http\Controllers\Library\DeductionLibraryController;
+use App\Http\Controllers\Library\FundCategoryController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -57,6 +59,7 @@ Route::prefix('barangay')->group(function () {
     Route::post('/otp/verify', [OtpController::class, 'verify']);
     Route::post('/otp/resend', [OtpController::class, 'resend']);
 
+    //MIDDLEWARE BARANGAY
     Route::middleware(['auth.barangay'])->group(function () {
         // Route::middleware(['check.role'])->group(function () {
                     Route::post('/setlogs', [AdminAuthController::class, 'logUserActionRequest']);
@@ -186,6 +189,20 @@ Route::prefix('barangay')->group(function () {
         Route::get('deductions/{id}', [DeductionController::class, 'show']);
         Route::put('deductions/{id}', [DeductionController::class, 'update']);
         Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
+
+        //Deductions Library
+        Route::get('deduction-codes', [DeductionLibraryController::class, 'index']);
+        Route::get('deduction-codes/{code}', [DeductionLibraryController::class, 'show']);
+
+        //Deductions preview
+        Route::post('deductions/preview', [DeductionController::class, 'preview']);
+
+        //FUNDS LIBRARY
+        Route::get('fund-categories', [FundCategoryController::class, 'index']);
+        Route::post('fund-categories', [FundCategoryController::class, 'store']);
+        Route::get('fund-categories/{id}', [FundCategoryController::class, 'show']);
+        Route::put('fund-categories/{id}', [FundCategoryController::class, 'update']);
+        Route::delete('fund-categories/{id}', [FundCategoryController::class, 'destroy']);
 
         // Expense Details endpoints
         Route::get('expense-details', [DisbursementController::class, 'getExpenseDetails']);

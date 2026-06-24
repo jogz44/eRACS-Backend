@@ -20,6 +20,7 @@ class Disbursement extends Model
         'dv_number',
         'ref_dv_number',
         'cheque_number',
+        'cheque_date',
         'bank_id',
         'payee',
         'payee2',

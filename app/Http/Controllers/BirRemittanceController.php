@@ -42,6 +42,7 @@ class BirRemittanceController extends Controller
                 \Illuminate\Validation\Rule::unique('disbursements', 'dv_number'),
             ],
             'cheque_number' => 'required|string',
+            'cheque_date'   => 'nullable|date',
             'bank_id'       => 'required|exists:lib_banks,id',
             'dv_amount'     => 'required|numeric|min:0.01',
         ]);
@@ -59,6 +60,7 @@ class BirRemittanceController extends Controller
             'date'          => $formattedDate,
             'dv_number'     => $request->dv_number,
             'cheque_number' => $request->cheque_number,
+            'cheque_date'    => $request->cheque_date,
             'bank_id'       => $request->bank_id,
             'payee'         => 'Bureau of Internal Revenue',
             'dv_amount'     => $request->dv_amount,
@@ -262,6 +264,7 @@ class BirRemittanceController extends Controller
             'date'              => $d->date,
             'dv_number'         => $d->dv_number,
             'cheque_number'     => $d->cheque_number,
+            'cheque_date'       => $d->cheque_date,
             'bank_id'           => $d->bank_id,
             'bank_name'         => $d->bank?->bank_name,
             'payee'             => $d->payee,

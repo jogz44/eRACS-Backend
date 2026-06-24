@@ -7,17 +7,18 @@ use Illuminate\Database\Eloquent\Model;
 class FundTransfer extends Model
 {
     protected $fillable = [
-        'barangay_id', 
-        'type', 
-        'fiscal_year_id', 
+        'barangay_id',
+        'type',
+        'fiscal_year_id',
         'date',
-        'dv_number', 
-        'cheque_number', 
-        'bank_id', 
+        'dv_number',
+        'cheque_number',
+        'cheque_date',
+        'bank_id',
         'payee',
-        'amount', 
-        'remarks', 
-        'status', 
+        'amount',
+        'remarks',
+        'status',
         'user_id',
     ];
 

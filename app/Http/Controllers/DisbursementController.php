@@ -91,6 +91,7 @@ class DisbursementController extends Controller
                 'date' => $d->date,
                 'dv_number' => $d->dv_number,
                 'cheque_number' => $d->cheque_number,
+                'cheque_date' => $d->cheque_date,
                 'bank_id' => $d->bank_id,
                 'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
@@ -119,6 +120,7 @@ class DisbursementController extends Controller
                     'payee' => $d->payee,
 
                     'cheque_number' => $detail->cheque_number ?: $d->cheque_number,
+                    'cheque_date' => $d->cheque_date,
                     'bank_id' => $detail->bank_id ?: $d->bank_id,
                     'bank_name' => $detail->bank
                         ? $detail->bank->bank_name
@@ -170,6 +172,7 @@ class DisbursementController extends Controller
                 'date' => $d->date,
                 'dv_number' => $d->dv_number,
                 'cheque_number' => $d->cheque_number,
+                'cheque_date' => $d->cheque_date,
                 'bank_id' => $d->bank_id,
                 'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
@@ -204,6 +207,7 @@ class DisbursementController extends Controller
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
             'dv_number' => 'required|string|unique:disbursements,dv_number',
             'cheque_number' => 'required|string',
+            'cheque_date'   => 'nullable|date',
             'bank_id' => 'required|exists:lib_banks,id',
             'payee' => 'required|string',
             'payee2' => 'required|string',
@@ -214,6 +218,7 @@ class DisbursementController extends Controller
             'expenses.*.particular' => 'nullable|string',
             'expenses.*.bank_id' => 'required|exists:lib_banks,id',
             'expenses.*.cheque_number' => 'required|string',
+            'expenses.*.cheque_date' => 'nullable|date',
             'expenses.*.expense_sub_item_id' => 'nullable|exists:lib_expense_sub_items,id',
             'expenses.*.expense_class_id' => 'nullable|exists:lib_expense_classes,id',
             'expenses.*.expense_type_id' => 'nullable|exists:lib_expense_types,id',
@@ -239,6 +244,7 @@ class DisbursementController extends Controller
                 'date' => $formattedDate,
                 'dv_number' => $request->dv_number,
                 'cheque_number' => $request->cheque_number,
+                'cheque_date' => $request->cheque_date,
                 'bank_id' => $request->bank_id,
                 'payee' => $request->payee,
                 'payee2' => $request->payee2,
@@ -260,26 +266,30 @@ class DisbursementController extends Controller
 
             $usedCheques = [];
 
-            foreach ($request->expenses as $expense) {
-                $key = $expense['bank_id'] . ':' . $expense['cheque_number'];
+            if ($request->has('expenses') && is_array($request->expenses)) {
 
-                if (isset($usedCheques[$key])) {
-                    continue;
+                foreach ($request->expenses as $expense) {
+
+                    $key = $expense['bank_id'] . ':' . $expense['cheque_number'];
+
+                    if (isset($usedCheques[$key])) {
+                        continue;
+                    }
+
+                    $bookletIds = LibBooklet::where('bank_id', $expense['bank_id'])->pluck('id');
+
+                    $cheque = LibCheque::where('cheque_number', $expense['cheque_number'])
+                        ->whereIn('booklet_id', $bookletIds)
+                        ->where('status', 'unused')
+                        ->firstOrFail();
+
+                    $cheque->update([
+                        'status' => 'used',
+                        'disbursement_id' => $disbursement->id,
+                    ]);
+
+                    $usedCheques[$key] = true;
                 }
-
-                $bookletIds = LibBooklet::where('bank_id', $expense['bank_id'])->pluck('id');
-
-                $cheque = LibCheque::where('cheque_number', $expense['cheque_number'])
-                    ->whereIn('booklet_id', $bookletIds)
-                    ->where('status', 'unused')
-                    ->firstOrFail();
-
-                $cheque->update([
-                    'status' => 'used',
-                    'disbursement_id' => $disbursement->id,
-                ]);
-
-                $usedCheques[$key] = true;
             }
 
             // Save expense details to tran_expense_details table
@@ -291,17 +301,17 @@ class DisbursementController extends Controller
                         ->where('status', 'committed');
 
                     if (!empty($expense['expense_sub_item_id'])) {
-    $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
-} elseif (!empty($expense['expense_item_id'])) {
-    $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-} elseif (!empty($expense['expense_type_id'])) {
-    $appropriationQuery->whereNull('expense_item_id')
-        ->where('expense_type_id', $expense['expense_type_id']);
-} elseif (!empty($expense['expense_class_id'])) {
-    $appropriationQuery->whereNull('expense_item_id')
-        ->whereNull('expense_type_id')
-        ->where('expense_class_id', $expense['expense_class_id']);
-}
+                        $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
+                    } elseif (!empty($expense['expense_item_id'])) {
+                        $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
+                    } elseif (!empty($expense['expense_type_id'])) {
+                        $appropriationQuery->whereNull('expense_item_id')
+                            ->where('expense_type_id', $expense['expense_type_id']);
+                    } elseif (!empty($expense['expense_class_id'])) {
+                        $appropriationQuery->whereNull('expense_item_id')
+                            ->whereNull('expense_type_id')
+                            ->where('expense_class_id', $expense['expense_class_id']);
+                    }
 
                     $appropriation = $appropriationQuery->first();
 
@@ -313,6 +323,7 @@ class DisbursementController extends Controller
                             'amount' => $expense['amount'],
                             'particulars' => $expense['particular'] ?? '',
                             'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+
                             'bank_id' => $expense['bank_id'] ?? null,
                         ]);
 
@@ -337,7 +348,8 @@ class DisbursementController extends Controller
                     $disbursement->payee,
                     number_format((float)$disbursement->dv_amount, 2),
                     $disbursement->bank ? '(' . $disbursement->bank->bank_name . ')' : '(bank)',
-                    $disbursement->cheque_number
+                    $disbursement->cheque_number,
+                    $disbursement->cheque_date
                 );
                 // Header log
                 AdminAuthController::logUserAction(
@@ -387,6 +399,7 @@ class DisbursementController extends Controller
             ],
             'ref_dv_number' => 'required|string|exists:disbursements,dv_number',
             'cheque_number' => 'required|string',
+            'cheque_date' => 'nullable|date',
             'bank_id' => 'required|exists:lib_banks,id',
             'payee' => 'required|string',
             'payee2' => 'required|string',
@@ -507,6 +520,7 @@ class DisbursementController extends Controller
                 'dv_number' => $request->dv_number,
                 'ref_dv_number' => $request->ref_dv_number,
                 'cheque_number' => $request->cheque_number,
+                'cheque_date' => $request->cheque_date,
                 'bank_id' => $request->bank_id,
                 'payee' => $request->payee,
                 'payee2' => $request->payee2,
@@ -645,6 +659,7 @@ class DisbursementController extends Controller
                             'amount' => $expense['amount'],
                             'particulars' => $expense['particular'] ?? '',
                             'cheque_number' => $expense['cheque_number'] ?? null,
+
                             'bank_id' => $expense['bank_id'] ?? null,
                         ]);
 
@@ -680,7 +695,8 @@ class DisbursementController extends Controller
                     $reimbursement->payee,
                     number_format((float)$reimbursement->dv_amount, 2),
                     $reimbursement->bank ? '(' . $reimbursement->bank->bank_name . ')' : '(bank)',
-                    $reimbursement->cheque_number
+                    $reimbursement->cheque_number,
+                    $reimbursement->cheque_date
                 );
                 // Header log
                 AdminAuthController::logUserAction(
@@ -971,6 +987,7 @@ class DisbursementController extends Controller
                 'dv_number' => $disbursement->dv_number,
                 'ref_dv_number' => $disbursement->ref_dv_number ?? null,
                 'cheque_number' => $disbursement->cheque_number,
+                'cheque_date' => $disbursement->cheque_date,
                 'bank_id' => $disbursement->bank_id,
                 'bank_name' => $disbursement->bank ? $disbursement->bank->bank_name : null,
                 'booklet_id' => $disbursement->cheque ? $disbursement->cheque->booklet_id : null,
@@ -1008,6 +1025,7 @@ class DisbursementController extends Controller
                     'dv_number' => $reimbursement->dv_number,
                     'ref_dv_number' => $reimbursement->ref_dv_number ?? null,
                     'cheque_number' => $reimbursement->cheque_number,
+                    'cheque_date' => $reimbursement->cheque_date,
                     'bank_id' => $reimbursement->bank_id,
                     'bank_name' => $reimbursement->bank ? $reimbursement->bank->bank_name : null,
                     'booklet_id' => $reimbursement->cheque ? $reimbursement->cheque->booklet_id : null,
@@ -1053,8 +1071,9 @@ class DisbursementController extends Controller
             'cancel'        => 'required|boolean',
             'bank_id'       => 'required_if:cancel,true|exists:lib_banks,id',
             'cheque_number' => 'required_if:cancel,true|string',
+            'cheque_date'   => 'nullable|date',
             'payee'         => 'required_if:cancel,true|string',
-            'payee2'         => 'required_if:cancel,true|string',
+            'payee2'        => 'required_if:cancel,true|string',
 
 
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
@@ -1087,6 +1106,7 @@ class DisbursementController extends Controller
                 'date' => $disbursement->date,
                 'dv_number' => $disbursement->dv_number,
                 'cheque_number' => $disbursement->cheque_number,
+                'cheque_date' => $disbursement->cheque_date,
                 'bank_id' => $disbursement->bank_id,
                 'payee' => $disbursement->payee,
                 'payee2' => $disbursement->payee2,
@@ -1102,6 +1122,7 @@ class DisbursementController extends Controller
             if ($request->cancel) {
                 $disbursement->update([
                     'cheque_number' => $request->cheque_number,
+                    'cheque_date' => $request->cheque_date,
                     'bank_id' => $request->bank_id,
                     'payee' => $request->payee,
                     'payee2' => $request->payee2,
@@ -1173,6 +1194,7 @@ class DisbursementController extends Controller
                                 'amount' => $expense['amount'],
                                 'particulars' => $expense['particular'] ?? '',
                                 'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+
                                 'bank_id' => $expense['bank_id'] ?? null,
                             ]);
 
@@ -1205,6 +1227,7 @@ class DisbursementController extends Controller
                                 'amount' => $expense['amount'],
                                 'particulars' => $expense['particular'] ?? '',
                                 'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+
                                 'bank_id' => $expense['bank_id'] ?? null,
                             ]);
 
@@ -1889,6 +1912,7 @@ class DisbursementController extends Controller
             ], 500);
         }
     }
+
     // GET /api/barangay/expense-details
     public function getExpenseDetails(Request $request)
     {

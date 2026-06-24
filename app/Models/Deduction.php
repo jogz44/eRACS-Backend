@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Deduction extends Model
 {
     protected $fillable = [
+
         'disbursement_id',
 
         'deduction_type',
@@ -23,7 +24,10 @@ class Deduction extends Model
         'gross_vat_inc',
         'gross_vat_exc',
 
-        'deduction_amount'
+        'deduction_amount',
+
+        'net_amount'
+
     ];
 
     protected $casts = [

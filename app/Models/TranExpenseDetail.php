@@ -15,6 +15,7 @@ class TranExpenseDetail extends Model
         'appropriation_id',
         'bank_id',
         'cheque_number',
+        'cheque_date',
         'amount',
         'particulars',
     ];

@@ -17,6 +17,7 @@ class LibCheque extends Model
         'bank_id',
         'booklet_id',
         'cheque_number',
+        'cheque_date',
         'status',
         'disbursement_id'
     ];
