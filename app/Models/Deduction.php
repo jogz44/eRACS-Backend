@@ -7,15 +7,14 @@ use Illuminate\Database\Eloquent\Model;
 class Deduction extends Model
 {
     protected $fillable = [
-
         'disbursement_id',
+        'deduction_code_id',
 
         'deduction_type',
         'tax_type',
         'code',
 
         'divisor',
-
         'vat_percent',
         'ewt_percent',
 
@@ -23,11 +22,8 @@ class Deduction extends Model
 
         'gross_vat_inc',
         'gross_vat_exc',
-
         'deduction_amount',
-
-        'net_amount'
-
+        'net_amount',
     ];
 
     protected $casts = [
@@ -39,8 +35,18 @@ class Deduction extends Model
         'deduction_amount' => 'decimal:2',
     ];
 
+    // Relationship to disbursement
     public function disbursement()
     {
         return $this->belongsTo(Disbursement::class);
+    }
+
+    // Relationship to deduction library code
+    public function deductionCode()
+    {
+        return $this->belongsTo(
+            LibDeductionCode::class,
+            'deduction_code_id'
+        );
     }
 }

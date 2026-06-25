@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Deduction;
 
 class LibDeductionCode extends Model
 {
@@ -15,4 +16,12 @@ class LibDeductionCode extends Model
         'vat_percent',
         'ewt_percent'
     ];
+
+    public function deductions()
+    {
+        return $this->hasMany(
+            Deduction::class,
+            'deduction_code_id'
+        );
+    }
 }

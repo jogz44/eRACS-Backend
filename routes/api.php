@@ -23,6 +23,7 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\DeductionController;
 use App\Http\Controllers\Library\DeductionLibraryController;
 use App\Http\Controllers\Library\FundCategoryController;
+use App\Http\Controllers\Library\RegisteredPayeeController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -77,6 +78,16 @@ Route::prefix('barangay')->group(function () {
         Route::put('/change-password', [AuthController::class, 'changePassword']);
 
         //Accounts Library
+
+        //Register payee Library
+        Route::prefix('library')->group(function () {
+            Route::get('/registered-payees', [RegisteredPayeeController::class, 'index']);
+            Route::post('/registered-payees', [RegisteredPayeeController::class, 'store']);
+            Route::get('/registered-payees/search', [RegisteredPayeeController::class, 'search']);
+            Route::get('/registered-payees/{id}', [RegisteredPayeeController::class, 'show']);
+            Route::put('/registered-payees/{id}', [RegisteredPayeeController::class, 'update']);
+            Route::delete('/registered-payees/{id}', [RegisteredPayeeController::class, 'destroy']);
+        });
 
         //Fiscal Years
         Route::get('fiscal-years', [AccountsLibController::class, 'getFiscalYears']);
@@ -190,9 +201,12 @@ Route::prefix('barangay')->group(function () {
         Route::put('deductions/{id}', [DeductionController::class, 'update']);
         Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
 
-        //Deductions Library
+        //Deduction code Library
         Route::get('deduction-codes', [DeductionLibraryController::class, 'index']);
+        Route::post('deduction-codes', [DeductionLibraryController::class, 'store']);
         Route::get('deduction-codes/{code}', [DeductionLibraryController::class, 'show']);
+        Route::put('deduction-codes/{id}', [DeductionLibraryController::class, 'update']);
+        Route::delete('deduction-codes/{id}', [DeductionLibraryController::class, 'destroy']);
 
         //Deductions preview
         Route::post('deductions/preview', [DeductionController::class, 'preview']);
@@ -300,6 +314,10 @@ Route::prefix('barangay')->group(function () {
         Route::get('/budgets/{budget}/allocations', [AppropriationController::class, 'getBudgetAllocations']);
         Route::get('/budgets/{id}/history', [AppropriationController::class, 'getAllocationHistory']);
         Route::get('/expense-hierarchy', [AppropriationController::class, 'getExpenseHierarchy']);
+
+        // Admin view registered payee
+        Route::get('/registered-payees', [RegisteredPayeeController::class, 'index']);
+        Route::get('/registered-payees/{id}', [RegisteredPayeeController::class, 'show']);
 
         // Admin disbursement endpoints - view only
         Route::get('/disbursements', [DisbursementController::class, 'adminIndex']);

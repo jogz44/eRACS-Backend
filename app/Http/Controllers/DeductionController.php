@@ -3,8 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\Models\Deduction;
 use App\Models\Disbursement;
+use App\Models\Deduction;
+use App\Models\LibDeductionCode;
 
 class DeductionController extends Controller
 {
@@ -18,14 +19,7 @@ class DeductionController extends Controller
         $validated = $request->validate([
             'disbursement_id' => 'nullable|exists:disbursements,id',
 
-            'deduction_type' => 'required|string',
-            'tax_type' => 'nullable|string',
-            'code' => 'nullable|string',
-
-            'divisor' => 'nullable|numeric|min:1',
-
-            'vat_percent' => 'nullable|numeric|min:0',
-            'ewt_percent' => 'nullable|numeric|min:0',
+            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
 
             'description' => 'nullable|string',
 
@@ -33,22 +27,18 @@ class DeductionController extends Controller
             'gross_vat_inc' => 'required|numeric|min:0',
         ]);
 
-        $amount =
-            (float) $validated['gross_vat_inc'];
+        // Fetch deduction template
+        $libCode = LibDeductionCode::findOrFail(
+            $validated['deduction_code_id']
+        );
 
-        $divisor =
-            (float) ($validated['divisor'] ?? 1);
+        $amount = (float) $validated['gross_vat_inc'];
 
-        $vat =
-            (float) ($validated['vat_percent'] ?? 0);
+        $divisor = (float) ($libCode->divisor ?? 1);
+        $vat = (float) ($libCode->vat_percent ?? 0);
+        $ewt = (float) ($libCode->ewt_percent ?? 0);
 
-        $ewt =
-            (float) ($validated['ewt_percent'] ?? 0);
-
-        /*
-        COMPUTE
-        */
-
+        //COMPUTATION
         $vatDeduction =
             ($amount / $divisor)
             * ($vat / 100);
@@ -66,21 +56,30 @@ class DeductionController extends Controller
         $netAmount =
             $amount - $deductionAmount;
 
-        $validated['gross_vat_exc'] =
-            round($grossVatExc, 2);
+        //SNAPSHOT VALUES
+        $data = [
+            'disbursement_id' => $validated['disbursement_id'] ?? null,
 
-        $validated['deduction_amount'] =
-            round($deductionAmount, 2);
+            'deduction_code_id' => $libCode->id,
 
-        /*
-        OPTIONAL
-        */
+            'deduction_type' => $libCode->deduction_type,
+            'tax_type'       => $libCode->tax_type,
+            'code'           => $libCode->code,
 
-        $validated['net_amount'] =
-            round($netAmount, 2);
+            'divisor'        => $libCode->divisor,
+            'vat_percent'    => $libCode->vat_percent,
+            'ewt_percent'    => $libCode->ewt_percent,
 
-        $deduction =
-            Deduction::create($validated);
+            'description'    => $validated['description'] ?? null,
+
+            'gross_vat_inc'  => round($amount, 2),
+            'gross_vat_exc'  => round($grossVatExc, 2),
+
+            'deduction_amount' => round($deductionAmount, 2),
+            'net_amount'       => round($netAmount, 2),
+        ];
+
+        $deduction = Deduction::create($data);
 
         return response()->json([
             'status' => true,
@@ -97,20 +96,23 @@ class DeductionController extends Controller
     public function preview(Request $request)
     {
         $validated = $request->validate([
-
+            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
             'gross_vat_inc' => 'required|numeric|min:0',
-            'divisor' => 'nullable|numeric|min:1',
-            'vat_percent' => 'nullable|numeric|min:0',
-            'ewt_percent' => 'nullable|numeric|min:0',
-
         ]);
 
+        $libCode = LibDeductionCode::findOrFail(
+            $validated['deduction_code_id']
+        );
+
         $amount = (float) $validated['gross_vat_inc'];
-        $divisor = (float) ( $validated['divisor'] ?? 1 );
-        $vat = (float) ( $validated['vat_percent'] ?? 0 );
-        $ewt = (float) ( $validated['ewt_percent'] ?? 0 );
+
+        $divisor = (float) ($libCode->divisor ?? 1);
+        $vat = (float) ($libCode->vat_percent ?? 0);
+        $ewt = (float) ($libCode->ewt_percent ?? 0);
+
         $vatDeduction = ($amount / $divisor) * ($vat / 100);
         $ewtDeduction = ($amount / $divisor) * ($ewt / 100);
+
         $grossVatExc = $amount - $vatDeduction;
         $deductionAmount = $vatDeduction + $ewtDeduction;
         $netAmount = $amount - $deductionAmount;
@@ -118,10 +120,14 @@ class DeductionController extends Controller
         return response()->json([
             'status' => true,
             'data' => [
-                'gross_vat_inc' => round( $amount, 2 ),
-                'gross_vat_exc' => round( $grossVatExc, 2 ),
-                'deduction_amount' => round( $deductionAmount, 2 ),
-                'net_amount' => round( $netAmount, 2 ),
+                'code' => $libCode->code,
+                'deduction_type' => $libCode->deduction_type,
+                'tax_type' => $libCode->tax_type,
+
+                'gross_vat_inc' => round($amount, 2),
+                'gross_vat_exc' => round($grossVatExc, 2),
+                'deduction_amount' => round($deductionAmount, 2),
+                'net_amount' => round($netAmount, 2),
             ]
         ]);
     }
@@ -130,7 +136,47 @@ class DeductionController extends Controller
     {
         $deduction = Deduction::findOrFail($id);
 
-        $deduction->update($request->all());
+        $validated = $request->validate([
+            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
+            'description' => 'nullable|string',
+            'gross_vat_inc' => 'required|numeric|min:0',
+        ]);
+
+        $libCode = LibDeductionCode::findOrFail(
+            $validated['deduction_code_id']
+        );
+
+        $amount = (float) $validated['gross_vat_inc'];
+
+        $divisor = (float) ($libCode->divisor ?? 1);
+        $vat = (float) ($libCode->vat_percent ?? 0);
+        $ewt = (float) ($libCode->ewt_percent ?? 0);
+
+        $vatDeduction = ($amount / $divisor) * ($vat / 100);
+        $ewtDeduction = ($amount / $divisor) * ($ewt / 100);
+
+        $grossVatExc = $amount - $vatDeduction;
+        $deductionAmount = $vatDeduction + $ewtDeduction;
+        $netAmount = $amount - $deductionAmount;
+
+        $deduction->update([
+            'deduction_code_id' => $libCode->id,
+
+            'deduction_type' => $libCode->deduction_type,
+            'tax_type' => $libCode->tax_type,
+            'code' => $libCode->code,
+
+            'divisor' => $libCode->divisor,
+            'vat_percent' => $libCode->vat_percent,
+            'ewt_percent' => $libCode->ewt_percent,
+
+            'description' => $validated['description'] ?? null,
+
+            'gross_vat_inc' => round($amount, 2),
+            'gross_vat_exc' => round($grossVatExc, 2),
+            'deduction_amount' => round($deductionAmount, 2),
+            'net_amount' => round($netAmount, 2),
+        ]);
 
         return response()->json([
             'status' => true,
