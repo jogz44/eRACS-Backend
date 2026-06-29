@@ -54,4 +54,78 @@ class DeductionLibraryController extends Controller
             'data' => $item
         ]);
     }
+
+    public function showById($id)
+    {
+        return response()->json([
+            'status' => true,
+            'data' => LibDeductionCode::findOrFail($id)
+        ]);
+    }
+
+    /**
+     * Get all available tax types
+     */
+    public function taxTypes()
+    {
+        $data = LibDeductionCode::select('tax_type')
+            ->whereNotNull('tax_type')
+            ->distinct()
+            ->pluck('tax_type');
+
+        return response()->json([
+            'status' => true,
+            'data' => $data
+        ]);
+    }
+
+    /**
+     * Get deduction types by tax type
+     */
+    public function deductionTypes(Request $request)
+    {
+        $request->validate([
+            'tax_type' => 'required|string'
+        ]);
+
+        $data = LibDeductionCode::where(
+                'tax_type',
+                $request->tax_type
+            )
+            ->select('deduction_type')
+            ->distinct()
+            ->pluck('deduction_type');
+
+        return response()->json([
+            'status' => true,
+            'data' => $data
+        ]);
+    }
+
+    /**
+     * Get codes by tax type + deduction type
+     */
+    public function codes(Request $request)
+    {
+        $request->validate([
+            'tax_type' => 'required|string',
+            'deduction_type' => 'required|string',
+        ]);
+
+        $data = LibDeductionCode::where(
+                'tax_type',
+                $request->tax_type
+            )
+            ->where(
+                'deduction_type',
+                $request->deduction_type
+            )
+            ->orderBy('code')
+            ->get();
+
+        return response()->json([
+            'status' => true,
+            'data' => $data
+        ]);
+    }
 }

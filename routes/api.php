@@ -205,8 +205,12 @@ Route::prefix('barangay')->group(function () {
         Route::get('deduction-codes', [DeductionLibraryController::class, 'index']);
         Route::post('deduction-codes', [DeductionLibraryController::class, 'store']);
         Route::get('deduction-codes/{code}', [DeductionLibraryController::class, 'show']);
+        Route::get('deduction-codes/id/{id}', [DeductionLibraryController::class, 'showById']);
         Route::put('deduction-codes/{id}', [DeductionLibraryController::class, 'update']);
         Route::delete('deduction-codes/{id}', [DeductionLibraryController::class, 'destroy']);
+        Route::get('deduction-codes/tax-types', [DeductionLibraryController::class, 'taxTypes']);
+        Route::get('deduction-codes/deduction-types', [DeductionLibraryController::class, 'deductionTypes']);
+        Route::get('deduction-codes/codes', [DeductionLibraryController::class, 'codes']);
 
         //Deductions preview
         Route::post('deductions/preview', [DeductionController::class, 'preview']);
@@ -335,11 +339,14 @@ Route::prefix('barangay')->group(function () {
         // Deductions (Admin View)
         Route::get('deductions', [DeductionController::class, 'index']);
         Route::get('deductions/{id}', [DeductionController::class, 'show']);
-
-        // Admin should also create/edit/delete
-        // Route::post('deductions', [DeductionController::class, 'store']);
-        // Route::put('deductions/{id}', [DeductionController::class, 'update']);
-        // Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
+        //Admin should also create/edit/delete
+        Route::post('deductions', [DeductionController::class, 'store']);
+        Route::put('deductions/{id}', [DeductionController::class, 'update']);
+        Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
+        //Deduction Library
+        Route::get('deduction-codes/tax-types', [DeductionLibraryController::class, 'taxTypes']);
+        Route::get('deduction-codes/deduction-types', [DeductionLibraryController::class, 'deductionTypes']);
+        Route::get('deduction-codes/codes', [DeductionLibraryController::class, 'codes']);
 
         // Admin can fetch expense details for a selected barangay
         Route::get('/expense-details', [DisbursementController::class, 'getExpenseDetails']);

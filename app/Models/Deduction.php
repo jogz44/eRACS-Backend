@@ -27,12 +27,13 @@ class Deduction extends Model
     ];
 
     protected $casts = [
-        'divisor' => 'decimal:2',
-        'vat_percent' => 'decimal:2',
-        'ewt_percent' => 'decimal:2',
-        'gross_vat_inc' => 'decimal:2',
-        'gross_vat_exc' => 'decimal:2',
+        'divisor'          => 'decimal:2',
+        'vat_percent'      => 'decimal:2',
+        'ewt_percent'      => 'decimal:2',
+        'gross_vat_inc'    => 'decimal:2',
+        'gross_vat_exc'    => 'decimal:2',
         'deduction_amount' => 'decimal:2',
+        'net_amount'       => 'decimal:2',
     ];
 
     // Relationship to disbursement

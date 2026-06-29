@@ -11,7 +11,11 @@ class DeductionController extends Controller
 {
     public function index()
     {
-        return response()->json(Deduction::all());
+        //return response()->json(Deduction::all());
+        return response()->json([
+            'status' => true,
+            'data' => Deduction::with('deductionCode')->get()
+        ]);
     }
 
     public function store(Request $request)
@@ -32,31 +36,33 @@ class DeductionController extends Controller
             $validated['deduction_code_id']
         );
 
-        $amount = (float) $validated['gross_vat_inc'];
+        $grossVatInc = (float) $validated['gross_vat_inc'];
 
-        $divisor = (float) ($libCode->divisor ?? 1);
+        $divisor = (float) ($libCode->divisor ?: 1);
+
+        if ($divisor <= 0) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid divisor value.'
+            ], 422);
+        }
         $vat = (float) ($libCode->vat_percent ?? 0);
         $ewt = (float) ($libCode->ewt_percent ?? 0);
 
-        //COMPUTATION
-        $vatDeduction =
-            ($amount / $divisor)
-            * ($vat / 100);
+        // STEP 1: Remove VAT from the gross amount
+        $grossVatExc = $grossVatInc / $divisor;
 
-        $ewtDeduction =
-            ($amount / $divisor)
-            * ($ewt / 100);
+        // STEP 2: Compute deductions from the VAT-exclusive amount
+        $vatDeduction = $grossVatExc * ($vat / 100);
+        $ewtDeduction = $grossVatExc * ($ewt / 100);
 
-        $grossVatExc =
-            $amount - $vatDeduction;
+        // STEP 3: Total deductions
+        $deductionAmount = $vatDeduction + $ewtDeduction;
 
-        $deductionAmount =
-            $vatDeduction + $ewtDeduction;
+        // STEP 4: Net amount payable
+        $netAmount = $grossVatInc - $deductionAmount;
 
-        $netAmount =
-            $amount - $deductionAmount;
-
-        //SNAPSHOT VALUES
+        // SNAPSHOT VALUES
         $data = [
             'disbursement_id' => $validated['disbursement_id'] ?? null,
 
@@ -72,12 +78,14 @@ class DeductionController extends Controller
 
             'description'    => $validated['description'] ?? null,
 
-            'gross_vat_inc'  => round($amount, 2),
+            'gross_vat_inc'  => round($grossVatInc, 2),
             'gross_vat_exc'  => round($grossVatExc, 2),
 
             'deduction_amount' => round($deductionAmount, 2),
-            'net_amount'       => round($netAmount, 2),
+            'net_amount'       => round($netAmount, 2), // ADD THIS
         ];
+
+        \Log::info('Deduction data:', $data);
 
         $deduction = Deduction::create($data);
 
@@ -104,18 +112,31 @@ class DeductionController extends Controller
             $validated['deduction_code_id']
         );
 
-        $amount = (float) $validated['gross_vat_inc'];
+        $grossVatInc = (float) $validated['gross_vat_inc'];
 
-        $divisor = (float) ($libCode->divisor ?? 1);
+        $divisor = (float) ($libCode->divisor ?: 1);
+
+        if ($divisor <= 0) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid divisor value.'
+            ], 422);
+        }
         $vat = (float) ($libCode->vat_percent ?? 0);
         $ewt = (float) ($libCode->ewt_percent ?? 0);
 
-        $vatDeduction = ($amount / $divisor) * ($vat / 100);
-        $ewtDeduction = ($amount / $divisor) * ($ewt / 100);
+        // STEP 1: Remove VAT from the gross amount
+        $grossVatExc = $grossVatInc / $divisor;
 
-        $grossVatExc = $amount - $vatDeduction;
+        // STEP 2: Compute deductions from the VAT-exclusive amount
+        $vatDeduction = $grossVatExc * ($vat / 100);
+        $ewtDeduction = $grossVatExc * ($ewt / 100);
+
+        // STEP 3: Total deductions
         $deductionAmount = $vatDeduction + $ewtDeduction;
-        $netAmount = $amount - $deductionAmount;
+
+        // STEP 4: Net amount payable
+        $netAmount = $grossVatInc - $deductionAmount;
 
         return response()->json([
             'status' => true,
@@ -124,10 +145,10 @@ class DeductionController extends Controller
                 'deduction_type' => $libCode->deduction_type,
                 'tax_type' => $libCode->tax_type,
 
-                'gross_vat_inc' => round($amount, 2),
+                'gross_vat_inc' => round($grossVatInc, 2),
                 'gross_vat_exc' => round($grossVatExc, 2),
                 'deduction_amount' => round($deductionAmount, 2),
-                'net_amount' => round($netAmount, 2),
+                'net_amount' => round($netAmount, 2), // ADD THIS
             ]
         ]);
     }
@@ -146,18 +167,31 @@ class DeductionController extends Controller
             $validated['deduction_code_id']
         );
 
-        $amount = (float) $validated['gross_vat_inc'];
+        $grossVatInc = (float) $validated['gross_vat_inc'];
 
-        $divisor = (float) ($libCode->divisor ?? 1);
+        $divisor = (float) ($libCode->divisor ?: 1);
+
+        if ($divisor <= 0) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Invalid divisor value.'
+            ], 422);
+        }
         $vat = (float) ($libCode->vat_percent ?? 0);
         $ewt = (float) ($libCode->ewt_percent ?? 0);
 
-        $vatDeduction = ($amount / $divisor) * ($vat / 100);
-        $ewtDeduction = ($amount / $divisor) * ($ewt / 100);
+        // STEP 1: Remove VAT from the gross amount
+        $grossVatExc = $grossVatInc / $divisor;
 
-        $grossVatExc = $amount - $vatDeduction;
+        // STEP 2: Compute deductions from the VAT-exclusive amount
+        $vatDeduction = $grossVatExc * ($vat / 100);
+        $ewtDeduction = $grossVatExc * ($ewt / 100);
+
+        // STEP 3: Total deductions
         $deductionAmount = $vatDeduction + $ewtDeduction;
-        $netAmount = $amount - $deductionAmount;
+
+        // STEP 4: Net amount payable
+        $netAmount = $grossVatInc - $deductionAmount;
 
         $deduction->update([
             'deduction_code_id' => $libCode->id,
@@ -172,10 +206,10 @@ class DeductionController extends Controller
 
             'description' => $validated['description'] ?? null,
 
-            'gross_vat_inc' => round($amount, 2),
+            'gross_vat_inc' => round($grossVatInc, 2),
             'gross_vat_exc' => round($grossVatExc, 2),
             'deduction_amount' => round($deductionAmount, 2),
-            'net_amount' => round($netAmount, 2),
+            'net_amount' => round($netAmount, 2), // ADD THIS
         ]);
 
         return response()->json([
