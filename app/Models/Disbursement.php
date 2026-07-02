@@ -72,4 +72,12 @@ class Disbursement extends Model
     {
         return $this->morphMany(AdminReview::class, 'reviewable');
     }
+
+    public function cheques()
+    {
+        return $this->hasMany(
+            LibCheque::class,
+            'disbursement_id'
+        );
+    }
 }

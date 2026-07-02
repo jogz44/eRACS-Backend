@@ -24,6 +24,7 @@ use App\Http\Controllers\DeductionController;
 use App\Http\Controllers\Library\DeductionLibraryController;
 use App\Http\Controllers\Library\FundCategoryController;
 use App\Http\Controllers\Library\RegisteredPayeeController;
+use App\Http\Controllers\ChequeController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -139,6 +140,12 @@ Route::prefix('barangay')->group(function () {
         Route::get('/booklets/{bookletId}/cheques', [BankLibraryController::class, 'getBookletCheques'])
         ->where('bookletId', '[0-9]+'); // Ensure numeric ID only
 
+        //Cheques library
+        Route::get('cheques/disbursement/{id}', [ChequeController::class, 'getByDisbursement']);
+        Route::post('cheques', [ChequeController::class, 'store']);
+        Route::put('cheques/{id}', [ChequeController::class, 'update']);
+        Route::delete('cheques/{id}', [ChequeController::class, 'destroy']);
+
         //Transaction Appropriation
         // Budget endpoints
         Route::get('budgets', [AppropriationController::class, 'index']);
@@ -201,16 +208,20 @@ Route::prefix('barangay')->group(function () {
         Route::put('deductions/{id}', [DeductionController::class, 'update']);
         Route::delete('deductions/{id}', [DeductionController::class, 'destroy']);
 
-        //Deduction code Library
+        // Deduction code Library
         Route::get('deduction-codes', [DeductionLibraryController::class, 'index']);
-        Route::post('deduction-codes', [DeductionLibraryController::class, 'store']);
-        Route::get('deduction-codes/{code}', [DeductionLibraryController::class, 'show']);
-        Route::get('deduction-codes/id/{id}', [DeductionLibraryController::class, 'showById']);
-        Route::put('deduction-codes/{id}', [DeductionLibraryController::class, 'update']);
-        Route::delete('deduction-codes/{id}', [DeductionLibraryController::class, 'destroy']);
+
         Route::get('deduction-codes/tax-types', [DeductionLibraryController::class, 'taxTypes']);
         Route::get('deduction-codes/deduction-types', [DeductionLibraryController::class, 'deductionTypes']);
         Route::get('deduction-codes/codes', [DeductionLibraryController::class, 'codes']);
+
+        Route::get('deduction-codes/id/{id}', [DeductionLibraryController::class, 'showById']);
+
+        Route::get('deduction-codes/{code}', [DeductionLibraryController::class, 'show'])->where('code', '[A-Z0-9]+');
+
+        Route::post('deduction-codes', [DeductionLibraryController::class, 'store']);
+        Route::put('deduction-codes/{id}', [DeductionLibraryController::class, 'update']);
+        Route::delete('deduction-codes/{id}', [DeductionLibraryController::class, 'destroy']);
 
         //Deductions preview
         Route::post('deductions/preview', [DeductionController::class, 'preview']);

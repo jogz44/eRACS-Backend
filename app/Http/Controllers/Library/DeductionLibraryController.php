@@ -57,9 +57,20 @@ class DeductionLibraryController extends Controller
 
     public function showById($id)
     {
+        \Log::info('Requested deduction code ID:', ['id' => $id]);
+
+        $code = LibDeductionCode::find($id);
+
+        if (!$code) {
+            return response()->json([
+                'status' => false,
+                'message' => "Deduction code {$id} not found"
+            ], 404);
+        }
+
         return response()->json([
             'status' => true,
-            'data' => LibDeductionCode::findOrFail($id)
+            'data' => $code
         ]);
     }
 

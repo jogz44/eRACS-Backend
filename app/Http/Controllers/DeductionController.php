@@ -20,6 +20,8 @@ class DeductionController extends Controller
 
     public function store(Request $request)
     {
+        \Log::info('REQUEST DATA', $request->all());
+
         $validated = $request->validate([
             'disbursement_id' => 'nullable|exists:disbursements,id',
 
@@ -37,9 +39,21 @@ class DeductionController extends Controller
         );
 
         $grossVatInc = (float) $validated['gross_vat_inc'];
+        if (!empty($validated['disbursement_id'])) {
+
+            $lastDeduction = Deduction::where(
+                'disbursement_id',
+                $validated['disbursement_id']
+            )
+            ->latest('id')
+            ->first();
+
+            if ($lastDeduction) {
+                $grossVatInc = (float) $lastDeduction->net_amount;
+            }
+        }
 
         $divisor = (float) ($libCode->divisor ?: 1);
-
         if ($divisor <= 0) {
             return response()->json([
                 'status' => false,
