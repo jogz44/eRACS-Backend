@@ -12,6 +12,8 @@ use App\Models\ContApproAccounts;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
+use App\Models\ContDeduction;
+use App\Models\ContBankCheque;
 
 class ContinuingDisbursementController extends Controller
 {
@@ -19,10 +21,26 @@ class ContinuingDisbursementController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        $query = ContDisbursement::where('barangay_id', $user->barangay_id)
-            ->with(['bank', 'expenseDetails.contApproAccount.transactionAppropriation.expenseClass', 'expenseDetails.contApproAccount.transactionAppropriation.expenseType', 'expenseDetails.contApproAccount.transactionAppropriation.expenseItem']);
-            dd($user->barangay_id);
-        $disbursements = $query->orderByDesc('created_at')->get();
+
+        $query = ContDisbursement::where(
+            'barangay_id',
+            $user->barangay_id
+        )
+        ->with([
+            'bank',
+            'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
+            'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
+            'expenseDetails.contApproAccount.transactionAppropriation.expenseItem'
+        ]);
+
+        // Filter by year if provided
+        if ($request->filled('year')) {
+            $query->whereYear('date', $request->year);
+        }
+
+        $disbursements = $query
+            ->orderByDesc('created_at')
+            ->get();
 
         $formattedDisbursements = $disbursements->map(function ($disbursement) {
             return [
@@ -31,7 +49,9 @@ class ContinuingDisbursementController extends Controller
                 'dvNumber' => $disbursement->dv_number,
                 'chequeNumber' => $disbursement->cheque_number,
                 'cheque_date' => $disbursement->cheque_date,
-                'bank' => $disbursement->bank ? $disbursement->bank->bank_name : 'N/A',
+                'bank' => $disbursement->bank
+                    ? $disbursement->bank->bank_name
+                    : 'N/A',
                 'bank_id' => $disbursement->bank_id,
                 'payee' => $disbursement->payee,
                 'payee2' => $disbursement->payee2,
@@ -41,7 +61,9 @@ class ContinuingDisbursementController extends Controller
                     return [
                         'id' => $detail->id,
                         'accountId' => $detail->cont_appro_account_id,
-                        'accountName' => $this->getAccountNameFromContApproAccountId($detail->cont_appro_account_id),
+                        'accountName' => $this->getAccountNameFromContApproAccountId(
+                            $detail->cont_appro_account_id
+                        ),
                         'particular' => $detail->particulars,
                         'amount' => $detail->amount,
                     ];
@@ -60,31 +82,64 @@ class ContinuingDisbursementController extends Controller
     // POST /api/barangay/continuing-disbursements
     public function store(Request $request)
     {
-        // Debug: Log the incoming request data
         \Log::info('Continuing Disbursement Store Request:', [
             'all_data' => $request->all(),
             'expenses' => $request->input('expenses', []),
+            'deductions' => $request->input('deductions', []),
+            'bank_cheques' => $request->input('bank_cheques', []),
         ]);
 
         try {
             $validated = $request->validate([
                 'date' => 'required|date',
+
                 'dvNumber' => 'required|string|max:255',
-                'chequeNumber' => 'required|string|max:255',
-                'bank_id' => 'required|exists:lib_banks,id',
+
+                // Keep temporarily until frontend fully supports multiple cheques
+                'chequeNumber' => 'nullable|string|max:255',
+                'cheque_date' => 'nullable|date',
+                'bank_id' => 'nullable|exists:lib_banks,id',
+
                 'payee' => 'required|string|max:255',
-                'payee2' => 'required|string|max:255',
+                'payee2' => 'nullable|string|max:255',
+
                 'amount' => 'required|numeric|min:0',
+
+                // Expenses
                 'expenses' => 'required|array|min:1',
                 'expenses.*.accountId' => 'required|exists:cont_appro_accounts,id',
                 'expenses.*.particulars' => 'required|string|max:255',
                 'expenses.*.amount' => 'required|numeric|min:0',
+
+                // Deductions
+                'deductions' => 'nullable|array',
+                'deductions.*.deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
+                'deductions.*.deduction_type' => 'required|string',
+                'deductions.*.tax_type' => 'nullable|string',
+                'deductions.*.code' => 'nullable|string',
+                'deductions.*.description' => 'nullable|string',
+                'deductions.*.divisor' => 'nullable|numeric',
+                'deductions.*.vat_percent' => 'nullable|numeric',
+                'deductions.*.ewt_percent' => 'nullable|numeric',
+                'deductions.*.gross_vat_inc' => 'required|numeric',
+                'deductions.*.gross_vat_exc' => 'nullable|numeric',
+                'deductions.*.deduction_amount' => 'required|numeric',
+                'deductions.*.net_amount' => 'required|numeric',
+
+                // Multiple bank cheques
+                'bank_cheques' => 'nullable|array',
+                'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
+                'bank_cheques.*.cheque_number' => 'required|string',
+                'bank_cheques.*.cheque_date' => 'required|date',
+                'bank_cheques.*.amount' => 'required|numeric|min:0',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
+
             \Log::error('Validation failed:', [
                 'errors' => $e->errors(),
                 'request_data' => $request->all()
             ]);
+
             return response()->json([
                 'status' => false,
                 'message' => 'Validation failed',
@@ -93,55 +148,107 @@ class ContinuingDisbursementController extends Controller
         }
 
         try {
+
             DB::beginTransaction();
 
-            // Create the disbursement
+            // Create main disbursement
             $disbursement = ContDisbursement::create([
                 'barangay_id' => $request->user()->barangay_id,
                 'date' => $validated['date'],
+
                 'dv_number' => $validated['dvNumber'],
-                'cheque_number' => $validated['chequeNumber'],
-                'cheque_date' => $validated['cheque_date'],
-                'bank_id' => $validated['bank_id'],
+
+                // Temporary compatibility
+                'cheque_number' => $validated['chequeNumber'] ?? '',
+                'cheque_date' => $validated['cheque_date'] ?? null,
+                'bank_id' => $validated['bank_id'] ?? null,
+
                 'payee' => $validated['payee'],
-                'payee2' => $validated['payee2'],
+                'payee2' => $validated['payee2'] ?? null,
+
                 'dv_amount' => $validated['amount'],
+
                 'status' => 'Unliquidated',
                 'user_id' => $request->user()->id,
             ]);
 
-            // Create expense details
+            //expenses
             foreach ($validated['expenses'] as $expense) {
-                // Get the continuing appropriation account
-                $contAccount = ContApproAccounts::find($expense['accountId']);
+
+                $contAccount = ContApproAccounts::find(
+                    $expense['accountId']
+                );
+
                 if (!$contAccount) {
-                    throw new \Exception("Continuing appropriation account not found");
+                    throw new \Exception(
+                        "Continuing appropriation account not found"
+                    );
                 }
 
-                // Create expense detail
                 ContTranExpenseDetail::create([
                     'cont_disbursement_id' => $disbursement->id,
-                    'cont_appro_account_id' => $contAccount->id, // Use the continuing account ID directly
+                    'cont_appro_account_id' => $contAccount->id,
                     'particulars' => $expense['particulars'],
                     'amount' => $expense['amount'],
                 ]);
 
-                // Update the current amount of the continuing appropriation account
                 $contAccount->current_amount -= $expense['amount'];
                 $contAccount->save();
             }
 
-            // Update cheque status
-            $cheque = LibCheque::where('cheque_number', $validated['chequeNumber'])->first();
-            if ($cheque) {
-                $cheque->status = 'used';
-                $cheque->disbursement_id = $disbursement->id;
-                $cheque->save();
+            //Deductions
+            foreach ($validated['deductions'] ?? [] as $deduction) {
+
+                ContDeduction::create([
+                    'cont_disbursement_id' => $disbursement->id,
+
+                    'deduction_code_id' => $deduction['deduction_code_id'] ?? null,
+
+                    'deduction_type' => $deduction['deduction_type'],
+                    'tax_type' => $deduction['tax_type'] ?? null,
+                    'code' => $deduction['code'] ?? null,
+
+                    'divisor' => $deduction['divisor'] ?? null,
+                    'vat_percent' => $deduction['vat_percent'] ?? 0,
+                    'ewt_percent' => $deduction['ewt_percent'] ?? 0,
+
+                    'description' => $deduction['description'] ?? null,
+
+                    'gross_vat_inc' => $deduction['gross_vat_inc'],
+                    'gross_vat_exc' => $deduction['gross_vat_exc'] ?? null,
+
+                    'deduction_amount' => $deduction['deduction_amount'],
+                    'net_amount' => $deduction['net_amount'],
+                ]);
+            }
+
+            //Multiple Bank Cheques
+            foreach ($validated['bank_cheques'] ?? [] as $cheque) {
+
+                ContBankCheque::create([
+                    'cont_disbursement_id' => $disbursement->id,
+
+                    'bank_id' => $cheque['bank_id'],
+                    'cheque_number' => $cheque['cheque_number'],
+                    'cheque_date' => $cheque['cheque_date'],
+                    'amount' => $cheque['amount'],
+                ]);
+
+                // Mark cheque as used in library
+                $libCheque = LibCheque::where(
+                    'cheque_number',
+                    $cheque['cheque_number']
+                )->first();
+
+                if ($libCheque) {
+                    $libCheque->status = 'used';
+                    $libCheque->disbursement_id = $disbursement->id;
+                    $libCheque->save();
+                }
             }
 
             DB::commit();
 
-            // Log the action
             AdminAuthController::logUserAction(
                 $request->user(),
                 'Created Continuing Disbursement',
@@ -151,11 +258,17 @@ class ContinuingDisbursementController extends Controller
             return response()->json([
                 'status' => true,
                 'message' => 'Continuing disbursement created successfully',
-                'data' => $disbursement
+                'data' => $disbursement->load([
+                    'expenseDetails',
+                    'deductions',
+                    'bankCheques'
+                ])
             ]);
 
         } catch (\Exception $e) {
+
             DB::rollBack();
+
             return response()->json([
                 'status' => false,
                 'message' => 'Failed to create continuing disbursement: ' . $e->getMessage()

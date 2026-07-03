@@ -25,13 +25,53 @@ class DeductionController extends Controller
         $validated = $request->validate([
             'disbursement_id' => 'nullable|exists:disbursements,id',
 
-            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
+            'deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
+
+            'deduction_type' => 'nullable|string',
+            'tax_type'       => 'nullable|string',
+            'code'           => 'nullable|string',
 
             'description' => 'nullable|string',
 
-            // User enters amount only
             'gross_vat_inc' => 'required|numeric|min:0',
+            'deduction_amount' => 'required_if:deduction_type,OTHERS|nullable|numeric|min:0',
         ]);
+
+        //'OTHERS' manual deduction option
+        if (($validated['deduction_type'] ?? null) === 'OTHERS') {
+
+            $grossVatInc = (float) $validated['gross_vat_inc'];
+            $deductionAmount = (float) $validated['deduction_amount'];
+
+            $netAmount = $grossVatInc - $deductionAmount;
+
+            $deduction = Deduction::create([
+                'disbursement_id'   => $validated['disbursement_id'] ?? null,
+                'deduction_code_id' => null,
+
+                'deduction_type' => 'OTHERS',
+                'tax_type'       => $validated['tax_type'] ?? null,
+                'code'           => $validated['code'] ?? null,
+
+                'divisor'        => null,
+                'vat_percent'    => 0,
+                'ewt_percent'    => 0,
+
+                'description'    => $validated['description'] ?? null,
+
+                'gross_vat_inc'  => round($grossVatInc, 2),
+                'gross_vat_exc'  => null,
+
+                'deduction_amount' => round($deductionAmount, 2),
+                'net_amount'       => round($netAmount, 2),
+            ]);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Manual deduction created.',
+                'data' => $deduction,
+            ]);
+        }
 
         // Fetch deduction template
         $libCode = LibDeductionCode::findOrFail(
@@ -118,9 +158,36 @@ class DeductionController extends Controller
     public function preview(Request $request)
     {
         $validated = $request->validate([
-            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
-            'gross_vat_inc' => 'required|numeric|min:0',
+            'deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
+            'deduction_type'    => 'nullable|string',
+            'gross_vat_inc'     => 'nullable|numeric|min:0',
+            'deduction_amount'  => 'nullable|numeric|min:0',
+            'tax_type'          => 'nullable|string',
+            'code'              => 'nullable|string',
         ]);
+
+        if (($validated['deduction_type'] ?? null) === 'OTHERS') {
+
+            $grossVatInc = (float) ($validated['gross_vat_inc'] ?? 0);
+            $deductionAmount = (float) ($validated['deduction_amount'] ?? 0);
+
+            return response()->json([
+                'status' => true,
+                'data' => [
+                    'code' => $validated['code'] ?? null,
+                    'deduction_type' => 'OTHERS',
+                    'tax_type' => $validated['tax_type'] ?? null,
+
+                    'gross_vat_inc' => round($grossVatInc, 2),
+                    'gross_vat_exc' => null,
+                    'deduction_amount' => round($deductionAmount, 2),
+                    'net_amount' => round(
+                        $grossVatInc - $deductionAmount,
+                        2
+                    ),
+                ]
+            ]);
+        }
 
         $libCode = LibDeductionCode::findOrFail(
             $validated['deduction_code_id']
@@ -172,10 +239,53 @@ class DeductionController extends Controller
         $deduction = Deduction::findOrFail($id);
 
         $validated = $request->validate([
-            'deduction_code_id' => 'required|exists:lib_deduction_codes,id',
+            'deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
+
+            'deduction_type' => 'nullable|string',
+            'tax_type'       => 'nullable|string',
+            'code'           => 'nullable|string',
+
             'description' => 'nullable|string',
+
             'gross_vat_inc' => 'required|numeric|min:0',
+
+            'deduction_amount' => 'required_if:deduction_type,OTHERS|nullable|numeric|min:0',
         ]);
+
+        //manual deduction 'Others' option
+        if (($validated['deduction_type'] ?? null) === 'OTHERS') {
+
+            $grossVatInc = (float) $validated['gross_vat_inc'];
+            $deductionAmount = (float) $validated['deduction_amount'];
+
+            $netAmount = $grossVatInc - $deductionAmount;
+
+            $deduction->update([
+                'deduction_code_id' => null,
+
+                'deduction_type' => 'OTHERS',
+                'tax_type'       => $validated['tax_type'] ?? null,
+                'code'           => $validated['code'] ?? null,
+
+                'divisor'        => null,
+                'vat_percent'    => 0,
+                'ewt_percent'    => 0,
+
+                'description'    => $validated['description'] ?? null,
+
+                'gross_vat_inc'  => round($grossVatInc, 2),
+                'gross_vat_exc'  => round($grossVatExc, 2),
+
+                'deduction_amount' => round($deductionAmount, 2),
+                'net_amount'       => round($netAmount, 2),
+            ]);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Manual deduction updated.',
+                'data' => $deduction,
+            ]);
+        }
 
         $libCode = LibDeductionCode::findOrFail(
             $validated['deduction_code_id']
@@ -221,7 +331,7 @@ class DeductionController extends Controller
             'description' => $validated['description'] ?? null,
 
             'gross_vat_inc' => round($grossVatInc, 2),
-            'gross_vat_exc' => round($grossVatExc, 2),
+            'gross_vat_exc' => null,
             'deduction_amount' => round($deductionAmount, 2),
             'net_amount' => round($netAmount, 2), // ADD THIS
         ]);

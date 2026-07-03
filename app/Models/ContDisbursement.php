@@ -65,4 +65,20 @@ class ContDisbursement extends Model
     {
         return $this->morphMany(AdminReview::class, 'reviewable');
     }
+
+    public function deductions()
+    {
+        return $this->hasMany(
+            ContDeduction::class,
+            'cont_disbursement_id'
+        );
+    }
+
+    public function bankCheques()
+    {
+        return $this->hasMany(
+            ContBankCheque::class,
+            'cont_disbursement_id'
+        );
+    }
 }
