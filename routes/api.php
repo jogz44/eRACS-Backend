@@ -307,8 +307,15 @@ Route::prefix('barangay')->group(function () {
 });
 
 
-    Route::prefix('admin')->group(function () {
-        Route::post('/login', [AdminAuthController::class, 'login']);
+
+
+
+
+
+
+// ADMIN
+Route::prefix('admin')->group(function () {
+    Route::post('/login', [AdminAuthController::class, 'login']);
 
 
     // Just use Sanctum's default auth
@@ -337,13 +344,23 @@ Route::prefix('barangay')->group(function () {
         // Admin disbursement endpoints - view only
         Route::get('/disbursements', [DisbursementController::class, 'adminIndex']);
 
-        //GET /api/admin/disbursements/{id}/deductions
-        Route::get(
-            'disbursements/{id}/deductions',
-            [DeductionController::class, 'getByDisbursement']
-        );
+        // Admin continuing-disbursement endpoints - view only
+        Route::get('/continuing-disbursements', [ContinuingDisbursementController::class, 'index']);
+        Route::post('/continuing-disbursements', [ContinuingDisbursementController::class, 'store']);
+        Route::get('/continuing-disbursements/{id}', [ContinuingDisbursementController::class, 'show']);
+        Route::put('/continuing-disbursements/{id}', [ContinuingDisbursementController::class, 'update']);
+        Route::delete('/continuing-disbursements/{id}', [ContinuingDisbursementController::class, 'destroy']);
 
-         // Admin fund-transfers and bir-remittances
+        // Admin Continuing-disbursement OR Details
+        Route::get('/continuing-disbursements/{id}/or-details', [ContinuingDisbursementController::class, 'getOrDetails']);
+        // Route::post('/continuing-disbursements/{id}/or-details', [ContinuingDisbursementController::class, 'saveOrDetails']);
+        // Route::delete('/continuing-disbursements/{disbursementId}/or-details/{orDetailId}', [ContinuingDisbursementController::class, 'deleteOrDetail']);
+        // Route::post('/continuing-disbursements/upload-or-photo', [ContinuingDisbursementController::class, 'uploadOrPhoto']);
+
+        //GET /api/admin/disbursements/{id}/deductions
+        Route::get('disbursements/{id}/deductions', [DeductionController::class, 'getByDisbursement']);
+
+        // Admin fund-transfers and bir-remittances
         Route::get('/fund-transfers', [FundTransferController::class, 'index']);
         Route::get('/bir-remittances', [BirRemittanceController::class, 'index']);
 
@@ -377,18 +394,23 @@ Route::prefix('barangay')->group(function () {
         // Admin can view individual augmentation
         Route::get('/augmentations/{id}', [BudgetAugmentationController::class, 'show']);
 
-
         // Admin supplemental budget endpoints
         Route::get('/unused-expenses', [AppropriationController::class, 'getUnusedExpenses']);
         Route::get('/supplemental-budgets', [AppropriationController::class, 'getSupplementalBudgets']);
         Route::get('/fiscal-years', [AppropriationController::class, 'getFiscalYears']);
-
 
         // Admin review endpoints
         Route::post('/reviews', [AdminReviewController::class, 'store']);
         Route::get('/reviews/check', [AdminReviewController::class, 'checkReview']);
         Route::get('/reviews', [AdminReviewController::class, 'getReviews']);
         Route::post('/reviews/bulk', [AdminReviewController::class, 'getBulkReviews']);
+
+        //Admin continuing-appropriation
+        Route::get('/continuing-appropriations', [ContinuingAppropriationController::class, 'index']);
+        Route::post('/continuing-appropriations', [ContinuingAppropriationController::class, 'store']);
+        Route::get('/continuing-appropriations/list', [ContinuingAppropriationController::class, 'getContinuingAppropriations']);
+        Route::get('/continuing-appropriations/{id}/history', [ContinuingAppropriationController::class, 'getAllocationHistory']);
+        Route::get('/continuing-appropriations/disbursement-accounts', [ContinuingAppropriationController::class, 'getContinuedAccountsForDisbursement']);
 
     });
 
@@ -407,7 +429,7 @@ Route::prefix('barangay')->group(function () {
         Route::get('/logs', [AdminAuthController::class, 'getAllLogs']);
         Route::get('/admin-logs', [AdminAuthController::class, 'getAdminLogs']);
 
-        // Admin Individual Log Open
+        //Admin Individual Log Open
         Route::get('/logs/{user}/{day}', [AdminAuthController::class, 'getUserLogs']);
     // });
 });

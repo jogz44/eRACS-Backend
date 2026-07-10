@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
 use App\Models\ContDeduction;
 use App\Models\ContBankCheque;
+use App\Models\Admin;
 
 class ContinuingDisbursementController extends Controller
 {
@@ -22,16 +23,18 @@ class ContinuingDisbursementController extends Controller
     {
         $user = $request->user();
 
-        $query = ContDisbursement::where(
-            'barangay_id',
-            $user->barangay_id
-        )
-        ->with([
-            'bank',
-            'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
-            'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
-            'expenseDetails.contApproAccount.transactionAppropriation.expenseItem'
-        ]);
+       $query = ContDisbursement::withoutGlobalScope(BarangayScope::class)
+            ->with([
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                'deductions',
+                'bankCheques.bank',
+            ]);
+
+        if (!($user instanceof Admin)) {
+            $query->where('barangay_id', $user->barangay_id);
+        }
 
         // Filter by year if provided
         if ($request->filled('year')) {
@@ -43,20 +46,18 @@ class ContinuingDisbursementController extends Controller
             ->get();
 
         $formattedDisbursements = $disbursements->map(function ($disbursement) {
+
             return [
                 'id' => $disbursement->id,
                 'date' => $disbursement->date,
                 'dvNumber' => $disbursement->dv_number,
-                'chequeNumber' => $disbursement->cheque_number,
-                'cheque_date' => $disbursement->cheque_date,
-                'bank' => $disbursement->bank
-                    ? $disbursement->bank->bank_name
-                    : 'N/A',
-                'bank_id' => $disbursement->bank_id,
+
                 'payee' => $disbursement->payee,
                 'payee2' => $disbursement->payee2,
+
                 'dvAmount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
+
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
                     return [
                         'id' => $detail->id,
@@ -68,6 +69,39 @@ class ContinuingDisbursementController extends Controller
                         'amount' => $detail->amount,
                     ];
                 }),
+
+                'deductions' => $disbursement->deductions->map(function ($deduction) {
+                    return [
+                        'id' => $deduction->id,
+                        'deduction_code_id' => $deduction->deduction_code_id,
+                        'deduction_type' => $deduction->deduction_type,
+                        'tax_type' => $deduction->tax_type,
+                        'code' => $deduction->code,
+                        'description' => $deduction->description,
+                        'divisor' => $deduction->divisor,
+                        'vat_percent' => $deduction->vat_percent,
+                        'ewt_percent' => $deduction->ewt_percent,
+                        'gross_vat_inc' => $deduction->gross_vat_inc,
+                        'gross_vat_exc' => $deduction->gross_vat_exc,
+                        'deduction_amount' => $deduction->deduction_amount,
+                        'net_amount' => $deduction->net_amount,
+                    ];
+                }),
+
+                'bank_cheques' => $disbursement->bankCheques->map(function ($cheque) {
+                    return [
+                        'id' => $cheque->id,
+                        'bank_id' => $cheque->bank_id,
+                        'bank' => optional($cheque->bank)->bank_name,
+                        'cheque_number' => $cheque->cheque_number,
+                        'cheque_date' => $cheque->cheque_date,
+                        'amount' => $cheque->amount,
+                    ];
+                }),
+
+                // Optional helper for frontend
+                'net_amount' => $disbursement->deductions->last()->net_amount ?? $disbursement->dv_amount,
+
                 'created_at' => $disbursement->created_at,
                 'updated_at' => $disbursement->updated_at,
             ];
@@ -92,17 +126,9 @@ class ContinuingDisbursementController extends Controller
         try {
             $validated = $request->validate([
                 'date' => 'required|date',
-
                 'dvNumber' => 'required|string|max:255',
-
-                // Keep temporarily until frontend fully supports multiple cheques
-                'chequeNumber' => 'nullable|string|max:255',
-                'cheque_date' => 'nullable|date',
-                'bank_id' => 'nullable|exists:lib_banks,id',
-
                 'payee' => 'required|string|max:255',
                 'payee2' => 'nullable|string|max:255',
-
                 'amount' => 'required|numeric|min:0',
 
                 // Expenses
@@ -155,19 +181,10 @@ class ContinuingDisbursementController extends Controller
             $disbursement = ContDisbursement::create([
                 'barangay_id' => $request->user()->barangay_id,
                 'date' => $validated['date'],
-
                 'dv_number' => $validated['dvNumber'],
-
-                // Temporary compatibility
-                'cheque_number' => $validated['chequeNumber'] ?? '',
-                'cheque_date' => $validated['cheque_date'] ?? null,
-                'bank_id' => $validated['bank_id'] ?? null,
-
                 'payee' => $validated['payee'],
                 'payee2' => $validated['payee2'] ?? null,
-
                 'dv_amount' => $validated['amount'],
-
                 'status' => 'Unliquidated',
                 'user_id' => $request->user()->id,
             ]);
@@ -279,10 +296,22 @@ class ContinuingDisbursementController extends Controller
     // GET /api/barangay/continuing-disbursements/{id}
     public function show(Request $request, $id)
     {
-        $disbursement = ContDisbursement::where('id', $id)
-            ->where('barangay_id', $request->user()->barangay_id)
-            ->with(['bank', 'expenseDetails.contApproAccount.transactionAppropriation.expenseClass', 'expenseDetails.contApproAccount.transactionAppropriation.expenseType', 'expenseDetails.contApproAccount.transactionAppropriation.expenseItem'])
-            ->first();
+        $user = $request->user();
+
+        $query = ContDisbursement::withoutGlobalScope(BarangayScope::class)
+            ->with([
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                'deductions',
+                'bankCheques.bank',
+            ]);
+
+        if (!($user instanceof Admin)) {
+            $query->where('barangay_id', $user->barangay_id);
+        }
+
+        $disbursement = $query->find($id);
 
         if (!$disbursement) {
             return response()->json([
@@ -292,28 +321,72 @@ class ContinuingDisbursementController extends Controller
         }
 
         $formattedDisbursement = [
+
             'id' => $disbursement->id,
             'date' => $disbursement->date,
             'dvNumber' => $disbursement->dv_number,
-            'chequeNumber' => $disbursement->cheque_number,
-            'cheque_date' => $disbursement->cheque_date,
-            'bank' => $disbursement->bank ? $disbursement->bank->bank_name : 'N/A',
-            'bank_id' => $disbursement->bank_id,
+
             'payee' => $disbursement->payee,
             'payee2' => $disbursement->payee2,
+
             'dvAmount' => $disbursement->dv_amount,
             'status' => $disbursement->status,
+
             'expenses' => $disbursement->expenseDetails->map(function ($detail) {
+
                 return [
                     'id' => $detail->id,
                     'accountId' => $detail->cont_appro_account_id,
-                    'accountName' => $this->getAccountNameFromContApproAccountId($detail->cont_appro_account_id),
+                    'accountName' => $this->getAccountNameFromContApproAccountId(
+                        $detail->cont_appro_account_id
+                    ),
                     'particular' => $detail->particulars,
                     'amount' => $detail->amount,
                 ];
+
             }),
+
+            // NEW
+            'deductions' => $disbursement->deductions->map(function ($deduction) {
+
+                return [
+
+                    'id' => $deduction->id,
+                    'deduction_code_id' => $deduction->deduction_code_id,
+                    'deduction_type' => $deduction->deduction_type,
+                    'tax_type' => $deduction->tax_type,
+                    'code' => $deduction->code,
+                    'description' => $deduction->description,
+                    'divisor' => $deduction->divisor,
+                    'vat_percent' => $deduction->vat_percent,
+                    'ewt_percent' => $deduction->ewt_percent,
+                    'gross_vat_inc' => $deduction->gross_vat_inc,
+                    'gross_vat_exc' => $deduction->gross_vat_exc,
+                    'deduction_amount' => $deduction->deduction_amount,
+                    'net_amount' => $deduction->net_amount,
+
+                ];
+            }),
+
+            // NEW
+            'bank_cheques' => $disbursement->bankCheques->map(function ($cheque) {
+                return [
+
+                    'id' => $cheque->id,
+                    'bank_id' => $cheque->bank_id,
+                    'bank' => optional($cheque->bank)->bank_name,
+                    'cheque_number' => $cheque->cheque_number,
+                    'cheque_date' => $cheque->cheque_date,
+                    'amount' => $cheque->amount,
+
+                ];
+            }),
+
+            'net_amount' => $disbursement->deductions->last()->net_amount ?? $disbursement->dv_amount,
+
             'created_at' => $disbursement->created_at,
             'updated_at' => $disbursement->updated_at,
+
         ];
 
         return response()->json([
@@ -479,31 +552,38 @@ class ContinuingDisbursementController extends Controller
     public function getOrDetails(Request $request, $id)
     {
         try {
-            $disbursement = ContDisbursement::where('barangay_id', $request->user()->barangay_id)
-                ->findOrFail($id);
 
-            $orDetails = ContDisbursementOrDetail::where('cont_disbursement_id', $id)
-                ->orderBy('created_at', 'asc')
-                ->get()
-                ->map(function ($orDetail) {
-                    // Convert date from YYYY-MM-DD to DD/MM/YYYY format for frontend
-                    $formattedDate = '';
-                    if ($orDetail->or_date) {
-                        $date = \Carbon\Carbon::parse($orDetail->or_date);
-                        $formattedDate = $date->format('d/m/Y');
-                    }
+            $query = ContDisbursement::query();
 
-                    return [
-                        'id' => $orDetail->id,
-                        'orDate' => $formattedDate,
-                        'orNumber' => $orDetail->or_number,
-                        'orAmount' => $orDetail->or_amount,
-                        'orPhotoUrl' => $orDetail->or_photo,
-                        'remarks' => $orDetail->remarks,
-                        'created_at' => $orDetail->created_at,
-                        'updated_at' => $orDetail->updated_at,
-                    ];
-                });
+            // Barangay users can only access their own records.
+            // Admins can access any record.
+            if (!($request->user() instanceof Admin)) {
+                $query->where('barangay_id', $request->user()->barangay_id);
+            }
+
+            $disbursement = $query->findOrFail($id);
+
+            $orDetails = ContDisbursementOrDetail::where(
+                'cont_disbursement_id',
+                $disbursement->id
+            )
+            ->orderBy('created_at')
+            ->get()
+            ->map(function ($orDetail) {
+
+                return [
+                    'id' => $orDetail->id,
+                    'orDate' => $orDetail->or_date
+                        ? \Carbon\Carbon::parse($orDetail->or_date)->format('d/m/Y')
+                        : '',
+                    'orNumber' => $orDetail->or_number,
+                    'orAmount' => $orDetail->or_amount,
+                    'orPhotoUrl' => $orDetail->or_photo,
+                    'remarks' => $orDetail->remarks,
+                    'created_at' => $orDetail->created_at,
+                    'updated_at' => $orDetail->updated_at,
+                ];
+            });
 
             return response()->json([
                 'status' => true,
@@ -511,10 +591,12 @@ class ContinuingDisbursementController extends Controller
             ]);
 
         } catch (\Exception $e) {
+
             return response()->json([
                 'status' => false,
-                'message' => 'Failed to fetch OR details: ' . $e->getMessage()
+                'message' => 'Failed to fetch OR details: '.$e->getMessage()
             ], 500);
+
         }
     }
 

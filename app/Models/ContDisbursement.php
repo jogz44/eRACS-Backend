@@ -17,18 +17,16 @@ class ContDisbursement extends Model
         'barangay_id',
         'date',
         'dv_number',
-        'cheque_number',
-        'cheque_date',
-        'bank_id',
+        'ref_dv_number',
         'payee',
         'payee2',
         'dv_amount',
-        'status',
         'liquidated_amount',
+        'status',
+        'user_id',
         'liquidated_at',
         'remarks',
         'rejection_remarks',
-        'user_id',
     ];
 
     protected static function booted(): void
@@ -46,19 +44,9 @@ class ContDisbursement extends Model
         return $this->hasMany(ContDisbursementOrDetail::class, 'cont_disbursement_id');
     }
 
-    public function bank()
-    {
-        return $this->belongsTo(LibBank::class, 'bank_id');
-    }
-
     public function expenseDetails()
     {
         return $this->hasMany(ContTranExpenseDetail::class, 'cont_disbursement_id');
-    }
-
-    public function cheque()
-    {
-        return $this->hasOne(LibCheque::class, 'disbursement_id');
     }
 
     public function adminReviews(): MorphMany

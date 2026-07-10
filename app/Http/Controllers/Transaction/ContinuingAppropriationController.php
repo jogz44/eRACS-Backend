@@ -10,6 +10,7 @@ use App\Models\ContApproAccounts;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use App\Models\Admin;
 
 class ContinuingAppropriationController extends Controller
 {
@@ -177,25 +178,29 @@ class ContinuingAppropriationController extends Controller
     public function getContinuedAccountsForDisbursement(Request $request)
     {
         try {
+            $user = $request->user();
             // Get all continuing appropriation accounts that are active and have remaining balance
             $continuedAccounts = ContApproAccounts::with([
                 'transactionAppropriation.expenseClass.fiscalYear',
                 'transactionAppropriation.expenseType',
                 'transactionAppropriation.expenseItem.childItems'
             ])
-            ->whereHas('continuingAppropriation', function($query) use ($request) {
-                $query->where('barangay_id', $request->user()->barangay_id)
-                      ->where('status', 'committed');
+            ->whereHas('continuingAppropriation', function ($query) use ($user) {
+                $query->where('status', 'committed');
+
+                if (!($user instanceof \App\Models\Admin)) {
+                    $query->where('barangay_id', $user->barangay_id);
+                }
             })
             ->where('status', 'active')
             ->where('current_amount', '>', 0)
             ->get()
             ->map(function ($account) {
                 $tranApp = $account->transactionAppropriation;
-                
+
                 // Get sub-items for this expense item
                 $subItems = $tranApp->expenseItem?->childItems ?? collect();
-                
+
                 $result = [
                     'id' => $account->id,
                     'tranAppropriationId' => $tranApp->id,
@@ -205,7 +210,7 @@ class ContinuingAppropriationController extends Controller
                     'expenseItem' => $tranApp->expenseItem?->name,
                     'remaining_amount' => (float) $account->current_amount,
                     'continuingAppropriationId' => $account->contAppropriation_id,
-                    'description' => $account->continuingAppropriation?->description || 'Continued from previous year',
+                    'description' => $account->continuingAppropriation?->description ?? 'Continued from previous year',
                     'subItems' => $subItems->map(function($subItem) {
                         return [
                             'id' => $subItem->id,
@@ -214,7 +219,7 @@ class ContinuingAppropriationController extends Controller
                         ];
                     })->toArray()
                 ];
-                
+
                 return $result;
             })
             ->filter(function($account) {
@@ -237,76 +242,85 @@ class ContinuingAppropriationController extends Controller
     }
 
     /**
-     * Get all continuing appropriations for the current barangay
+     * GET all continuing appropriations for the current barangay
      */
     public function getContinuingAppropriations(Request $request)
-{
-    try {
-        $query = ContAppropriation::with(['continuingAccounts.transactionAppropriation', 'fiscalYear'])
-            ->where('barangay_id', $request->user()->barangay_id);
+    {
+        try {
+            $user = $request->user();
 
-        if ($request->has('fiscal_year_id')) {
-            $query->where('fiscal_year_id', $request->fiscal_year_id);
+            $query = ContAppropriation::with([
+                'continuingAccounts.transactionAppropriation',
+                'fiscalYear'
+            ]);
+
+            // Restrict only barangay users
+            if (!($user instanceof Admin)) {
+                $query->where('barangay_id', $user->barangay_id);
+            }
+
+            if ($request->has('fiscal_year_id')) {
+                $query->where('fiscal_year_id', $request->fiscal_year_id);
+            }
+
+            $continuingAppropriations = $query->orderBy('created_at', 'desc')
+                ->get()
+                ->map(function ($item) {
+                    // Calculate total disbursed amount from continuing appropriation accounts
+                    $totalDisbursed = 0;
+                    foreach ($item->continuingAccounts as $account) {
+                        $disbursedAmount = \App\Models\ContTranExpenseDetail::where('cont_appro_account_id', $account->id)
+                            ->sum('amount');
+                        $totalDisbursed += $disbursedAmount;
+                    }
+
+                    $availableAmount = (float) $item->appropriation_amount - (float) $totalDisbursed;
+
+                    return [
+                        'id' => $item->id,
+                        'continued_date' => $item->continued_date->format('m/d/Y'),
+                        'year' => $item->fiscalYear->year,
+                        'expense_class' => $item->expense_class,
+                        'description' => $item->description,
+                        'appropriation' => (float) $item->appropriation_amount,
+                        'total_appropriated' => (float) $totalDisbursed,
+                        'unappropriated' => (float) $availableAmount,
+                        'status' => $item->status,
+                        'accounts' => $item->continuingAccounts->map(function ($account) {
+                            $tranApp = $account->transactionAppropriation;
+                            $accountNameParts = [
+                                $tranApp->expenseClass?->name,
+                                $tranApp->expenseType?->name,
+                                $tranApp->expenseItem?->name,
+                                $tranApp->expenseSubItem?->name
+                            ];
+
+                            return [
+                                'id' => $account->id,
+                                'balance' => (float) $account->current_amount,
+                                'accountName' => implode(' > ', array_filter($accountNameParts)),
+                                'expenseClass' => $tranApp->expenseClass?->name,
+                                'expenseType' => $tranApp->expenseType?->name,
+                                'expenseItem' => $tranApp->expenseItem?->name,
+                                'expenseSubItem' => $tranApp->expenseSubItem?->name,
+                                'subItems' => $tranApp->subItems ?? [],
+                            ];
+                        })
+                    ];
+                });
+
+            return response()->json([
+                'status' => true,
+                'data' => $continuingAppropriations
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to fetch continuing appropriations: ' . $e->getMessage()
+            ], 500);
         }
-
-        $continuingAppropriations = $query->orderBy('created_at', 'desc')
-            ->get()
-            ->map(function ($item) {
-                // Calculate total disbursed amount from continuing appropriation accounts
-                $totalDisbursed = 0;
-                foreach ($item->continuingAccounts as $account) {
-                    $disbursedAmount = \App\Models\ContTranExpenseDetail::where('cont_appro_account_id', $account->id)
-                        ->sum('amount');
-                    $totalDisbursed += $disbursedAmount;
-                }
-
-                $availableAmount = (float) $item->appropriation_amount - (float) $totalDisbursed;
-
-                return [
-                    'id' => $item->id,
-                    'continued_date' => $item->continued_date->format('m/d/Y'),
-                    'year' => $item->fiscalYear->year,
-                    'expense_class' => $item->expense_class,
-                    'description' => $item->description,
-                    'appropriation' => (float) $item->appropriation_amount,
-                    'total_appropriated' => (float) $totalDisbursed,
-                    'unappropriated' => (float) $availableAmount,
-                    'status' => $item->status,
-                    'accounts' => $item->continuingAccounts->map(function ($account) {
-                        $tranApp = $account->transactionAppropriation;
-                        $accountNameParts = [
-                            $tranApp->expenseClass?->name,
-                            $tranApp->expenseType?->name,
-                            $tranApp->expenseItem?->name,
-                            $tranApp->expenseSubItem?->name
-                        ];
-
-                        return [
-                            'id' => $account->id,
-                            'balance' => (float) $account->current_amount,
-                            'accountName' => implode(' > ', array_filter($accountNameParts)),
-                            'expenseClass' => $tranApp->expenseClass?->name,
-                            'expenseType' => $tranApp->expenseType?->name,
-                            'expenseItem' => $tranApp->expenseItem?->name,
-                            'expenseSubItem' => $tranApp->expenseSubItem?->name,
-                            'subItems' => $tranApp->subItems ?? [],
-                        ];
-                    })
-                ];
-            });
-
-        return response()->json([
-            'status' => true,
-            'data' => $continuingAppropriations
-        ]);
-
-    } catch (\Exception $e) {
-        return response()->json([
-            'status' => false,
-            'message' => 'Failed to fetch continuing appropriations: ' . $e->getMessage()
-        ], 500);
     }
-}
 
     /**
      * Update the status of a continuing appropriation
@@ -318,8 +332,15 @@ class ContinuingAppropriationController extends Controller
         ]);
 
         try {
-            $continuingAppropriation = ContAppropriation::where('barangay_id', $request->user()->barangay_id)
-                ->findOrFail($id);
+            $user = $request->user();
+
+            $query = ContAppropriation::query();
+
+            if (!($user instanceof \App\Models\Admin)) {
+                $query->where('barangay_id', $user->barangay_id);
+            }
+
+            $continuingAppropriation = $query->findOrFail($id);
 
             $continuingAppropriation->update(['status' => $validated['status']]);
 
@@ -354,9 +375,18 @@ class ContinuingAppropriationController extends Controller
                 ->findOrFail($id);
 
             // Get allocations made for this continuing appropriation
-            $allocations = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem'])
-                ->where('barangay_id', $request->user()->barangay_id)
-                ->where('cont_appropriation_id', $continuingAppropriation->id) // Get allocations for this specific continuing appropriation
+            $allocationQuery = TranAppropriation::with([
+                'expenseClass',
+                'expenseType',
+                'expenseItem'
+            ]);
+
+            if (!($user instanceof \App\Models\Admin)) {
+                $allocationQuery->where('barangay_id', $user->barangay_id);
+            }
+
+            $allocations = $allocationQuery
+                ->where('cont_appropriation_id', $continuingAppropriation->id)
                 ->where('status', 'committed')
                 ->orderBy('transaction_date', 'desc')
                 ->get()
@@ -638,98 +668,98 @@ class ContinuingAppropriationController extends Controller
         'allocations.*.expense_class_id' => 'nullable|integer|exists:lib_expense_classes,id',
         'allocations.*.expense_type_id' => 'nullable|integer|exists:lib_expense_types,id',
         'allocations.*.expense_item_id' => 'nullable|integer|exists:lib_expense_items,id'
-    ]);
-
-    // Get existing allocations for this budget
-    $existingAllocations = TranAppropriation::where('budget_id', $budget->id)
-        ->where('barangay_id', $request->user()->barangay_id)
-        ->get();
-
-    $existingTotal = $existingAllocations->sum('amount');
-
-    // Calculate total of new allocations
-    $newTotal = array_sum(array_column($validated['allocations'], 'amount'));
-
-    // Calculate net change (new total - existing total)
-    $netChange = $newTotal - $existingTotal;
-
-    \Log::info('Allocation validation', [
-        'budget_id' => $budget->id,
-        'budget_current_amount' => $budget->current_amount,
-        'existing_total' => $existingTotal,
-        'new_total' => $newTotal,
-        'net_change' => $netChange,
-        'allocations' => $validated['allocations']
-    ]);
-
-    // FIXED: Check net change against current_amount (available budget)
-    if ($netChange > $budget->current_amount) {
-        \Log::warning('Net change exceeds available budget', [
-            'net_change' => $netChange,
-            'available_budget' => $budget->current_amount,
-            'difference' => $netChange - $budget->current_amount
         ]);
 
-        return response()->json([
-            'status' => false,
-            'message' => sprintf(
-                'Net change exceeds available budget by ₱%s. Available: ₱%s, Net Change: ₱%s',
-                number_format($netChange - $budget->current_amount, 2),
-                number_format($budget->current_amount, 2),
-                number_format($netChange, 2)
-            )
-        ], 422);
-    }
+        // Get existing allocations for this budget
+        $existingAllocations = TranAppropriation::where('budget_id', $budget->id)
+            ->where('barangay_id', $request->user()->barangay_id)
+            ->get();
 
-    return DB::transaction(function () use ($validated, $budget, $request, $netChange, $existingAllocations) {
-        $appropriations = [];
+        $existingTotal = $existingAllocations->sum('amount');
 
-        // Delete existing allocations for this budget
-        $existingAllocations->each->delete();
+        // Calculate total of new allocations
+        $newTotal = array_sum(array_column($validated['allocations'], 'amount'));
 
-        // Create new allocations
-        foreach ($validated['allocations'] as $allocation) {
-            $appropriationData = [
-                'barangay_id' => $request->user()->barangay_id,
-                'budget_id' => $budget->id,
-                'amount' => $allocation['amount'],
-                'transaction_date' => now(),
-                'status' => 'committed',
-                'user_id' => $request->user()->id,
-                'expense_class_id' => $allocation['expense_class_id'] ?? null,
-                'expense_type_id' => $allocation['expense_type_id'] ?? null,
-                'expense_item_id' => $allocation['expense_item_id'] ?? null,
-                'expense_sub_item_id' => $allocation['expense_sub_item_id'] ?? null
-            ];
+        // Calculate net change (new total - existing total)
+        $netChange = $newTotal - $existingTotal;
 
-            $appropriations[] = TranAppropriation::create($appropriationData);
+        \Log::info('Allocation validation', [
+            'budget_id' => $budget->id,
+            'budget_current_amount' => $budget->current_amount,
+            'existing_total' => $existingTotal,
+            'new_total' => $newTotal,
+            'net_change' => $netChange,
+            'allocations' => $validated['allocations']
+        ]);
 
-            AdminAuthController::logUserAction(
-                $request->user(),
-                'Updated Appropriation',
-                "Set appropriation amount to ₱" . number_format($allocation['amount'], 2) .
-                " for budget: " . $budget->description
-            );
+        // FIXED: Check net change against current_amount (available budget)
+        if ($netChange > $budget->current_amount) {
+            \Log::warning('Net change exceeds available budget', [
+                'net_change' => $netChange,
+                'available_budget' => $budget->current_amount,
+                'difference' => $netChange - $budget->current_amount
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => sprintf(
+                    'Net change exceeds available budget by ₱%s. Available: ₱%s, Net Change: ₱%s',
+                    number_format($netChange - $budget->current_amount, 2),
+                    number_format($budget->current_amount, 2),
+                    number_format($netChange, 2)
+                )
+            ], 422);
         }
 
-        // Update budget's current amount by the net change
-        $budget->current_amount = $budget->current_amount - $netChange;
-        $budget->save();
+        return DB::transaction(function () use ($validated, $budget, $request, $netChange, $existingAllocations) {
+            $appropriations = [];
 
-        \Log::info('Budget updated after allocation', [
-            'budget_id' => $budget->id,
-            'new_current_amount' => $budget->current_amount,
-            'net_change' => $netChange
-        ]);
+            // Delete existing allocations for this budget
+            $existingAllocations->each->delete();
 
-        return response()->json([
-            'status' => true,
-            'message' => 'Allocation saved successfully',
-            'budget' => $budget->fresh(),
-            'appropriations' => $appropriations,
-            'net_change' => $netChange,
-            'updated_amount' => $budget->current_amount
-        ]);
-    });
-}
+            // Create new allocations
+            foreach ($validated['allocations'] as $allocation) {
+                $appropriationData = [
+                    'barangay_id' => $request->user()->barangay_id,
+                    'budget_id' => $budget->id,
+                    'amount' => $allocation['amount'],
+                    'transaction_date' => now(),
+                    'status' => 'committed',
+                    'user_id' => $request->user()->id,
+                    'expense_class_id' => $allocation['expense_class_id'] ?? null,
+                    'expense_type_id' => $allocation['expense_type_id'] ?? null,
+                    'expense_item_id' => $allocation['expense_item_id'] ?? null,
+                    'expense_sub_item_id' => $allocation['expense_sub_item_id'] ?? null
+                ];
+
+                $appropriations[] = TranAppropriation::create($appropriationData);
+
+                AdminAuthController::logUserAction(
+                    $request->user(),
+                    'Updated Appropriation',
+                    "Set appropriation amount to ₱" . number_format($allocation['amount'], 2) .
+                    " for budget: " . $budget->description
+                );
+            }
+
+            // Update budget's current amount by the net change
+            $budget->current_amount = $budget->current_amount - $netChange;
+            $budget->save();
+
+            \Log::info('Budget updated after allocation', [
+                'budget_id' => $budget->id,
+                'new_current_amount' => $budget->current_amount,
+                'net_change' => $netChange
+            ]);
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Allocation saved successfully',
+                'budget' => $budget->fresh(),
+                'appropriations' => $appropriations,
+                'net_change' => $netChange,
+                'updated_amount' => $budget->current_amount
+            ]);
+        });
+    }
 }
