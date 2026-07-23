@@ -19,11 +19,12 @@ class Disbursement extends Model
         'date',
         'dv_number',
         'ref_dv_number',
-        'cheque_number',
-        'cheque_date',
-        'bank_id',
+
         'payee',
         'payee2',
+
+        'bank_status',
+        
         'dv_amount',
         'status',
         'liquidated_amount',
@@ -48,11 +49,6 @@ class Disbursement extends Model
         return $this->hasMany(DisbursementOrDetail::class);
     }
 
-    public function bank()
-    {
-        return $this->belongsTo(LibBank::class, 'bank_id');
-    }
-
     public function expenseDetails()
     {
         return $this->hasMany(TranExpenseDetail::class, 'disbursement_id');
@@ -63,21 +59,13 @@ class Disbursement extends Model
         return $this->hasMany(Deduction::class, 'disbursement_id');
     }
 
-    public function cheque()
-    {
-        return $this->hasOne(LibCheque::class, 'disbursement_id');
-    }
-
     public function adminReviews(): MorphMany
     {
         return $this->morphMany(AdminReview::class, 'reviewable');
     }
 
-    public function cheques()
+    public function bankCheques()
     {
-        return $this->hasMany(
-            LibCheque::class,
-            'disbursement_id'
-        );
+        return $this->hasMany(BankCheque::class, 'disbursement_id');
     }
 }

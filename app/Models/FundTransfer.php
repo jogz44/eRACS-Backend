@@ -15,6 +15,9 @@ class FundTransfer extends Model
         'cheque_number',
         'cheque_date',
         'bank_id',
+
+        'bank_status',
+        
         'payee',
         'amount',
         'remarks',

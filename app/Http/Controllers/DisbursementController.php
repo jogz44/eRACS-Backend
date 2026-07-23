@@ -11,6 +11,7 @@ use App\Models\TranAppropriation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
+use App\Models\BankCheque;
 
 class DisbursementController extends Controller
 {
@@ -62,93 +63,104 @@ class DisbursementController extends Controller
             ], 401);
         }
 
-        // $query = Disbursement::with(['bank', 'barangay']);
-        $query = Disbursement::with([
+        $query = TranExpenseDetail::with([
             'bank',
-            'barangay',
-            'expenseDetails.bank',
-            'expenseDetails.appropriation.expenseClass.fiscalYear',
+            'appropriation.expenseClass.fiscalYear',
+            'disbursement.barangay',
+            'disbursement.bankCheques.bank',
         ]);
 
         // If user is authenticated and has barangay_id, filter by it
         if ($user && isset($user->barangay_id)) {
-            $query->where('barangay_id', $user->barangay_id);
+            $query->whereHas('disbursement', function ($q) use ($user) {
+                $q->where('barangay_id', $user->barangay_id);
+            });
         } else {
         }
 
         // Apply year filter if provided
         if ($request->filled('year')) {
-            $query->whereRelation('expenseDetails.appropriation.expenseClass.fiscalYear', 'year', $request->year);
+            $query->whereRelation(
+                'appropriation.expenseClass.fiscalYear',
+                'year',
+                $request->year
+            );
         } else {
-            $query->whereRelation('expenseDetails.appropriation.expenseClass.fiscalYear', 'year', now()->year);
+            $query->whereRelation(
+                'appropriation.expenseClass.fiscalYear',
+                'year',
+                now()->year
+            );
         }
 
-        $disbursements = $query->orderByDesc('date')->get();
+        $perPage = $request->get('per_page', 10);
 
-        $result = $disbursements->map(function($d) {
+        $disbursements = $query
+            ->latest('created_at')
+            ->paginate($perPage);
+
+        $result = $disbursements->through(function ($detail) {
+            $d = $detail->disbursement;
             return [
                 'id' => $d->id,
+                'row_id' => $d->id.'-'.$detail->id,
+                'disbursement_id' => $d->id,
+                'expense_detail_id' => $detail->id,
+
                 'date' => $d->date,
                 'dv_number' => $d->dv_number,
-                'cheque_number' => $d->cheque_number,
-                'cheque_date' => $d->cheque_date,
-                'bank_id' => $d->bank_id,
-                'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
-                'payee2' => $d->payee2,
-                'dv_amount' => $d->dv_amount,
+
+                'bank_status' => $d->bank_status,
+
+                'bank_cheques' => $d->bankCheques->map(function ($cheque) {
+                    return [
+                        'id' => $cheque->id,
+                        'bank_id' => $cheque->bank_id,
+                        'bank_name' => optional($cheque->bank)->bank_name,
+                        'bank_status' => $cheque->bank_status,
+                        'cheque_number' => $cheque->cheque_number,
+                        'cheque_date' => $cheque->cheque_date,
+                        'amount' => $cheque->amount,
+                    ];
+                }),
+
+                'particular' => $detail->particulars,
+                'dv_amount' => $detail->amount,
+
                 'status' => $d->status,
                 'remarks' => $d->remarks,
                 'rejection_remarks' => $d->rejection_remarks,
-                'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
+
+                'barangay_name' => optional($d->barangay)->name ?? 'Unknown',
+
                 'created_at' => $d->created_at,
                 'updated_at' => $d->updated_at,
             ];
         });
 
-        $result = $disbursements->flatMap(function ($d) {
-            return $d->expenseDetails->map(function ($detail) use ($d) {
-                return [
-                    // 'id' => $d->id . '-' . $detail->id,
-                    'id' => $d->id,
-                    'row_id' => $d->id . '-' . $detail->id,
-                    'disbursement_id' => $d->id,
-                    'expense_detail_id' => $detail->id,
-
-                    'date' => $d->date,
-                    'dv_number' => $d->dv_number,
-                    'payee' => $d->payee,
-
-                    'cheque_number' => $detail->cheque_number ?: $d->cheque_number,
-                    'cheque_date' => $d->cheque_date,
-                    'bank_id' => $detail->bank_id ?: $d->bank_id,
-                    'bank_name' => $detail->bank
-                        ? $detail->bank->bank_name
-                        : optional($d->bank)->bank_name,
-
-                    'particular' => $detail->particulars,
-                    'dv_amount' => $detail->amount,
-
-                    'status' => $d->status,
-                    'remarks' => $d->remarks,
-                    'rejection_remarks' => $d->rejection_remarks,
-                    'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
-                    'created_at' => $d->created_at,
-                    'updated_at' => $d->updated_at,
-                ];
-            });
-        })->values();
-
         return response()->json([
             'status' => true,
-            'data' => $result,
+            'data' => $result->items(),
+
+            'pagination' => [
+                'current_page' => $result->currentPage(),
+                'last_page' => $result->lastPage(),
+                'per_page' => $result->perPage(),
+                'total' => $result->total(),
+            ]
         ]);
     }
 
     // GET /api/admin/disbursements - Admin endpoint to fetch disbursements across all barangays
     public function adminIndex(Request $request)
     {
-        $query = Disbursement::with('bank', 'barangay');
+        $query = TranExpenseDetail::with([
+            'bank',
+            'appropriation.expenseClass.fiscalYear',
+            'disbursement.barangay',
+            'disbursement.bankCheques.bank',
+        ]);
 
         if ($request->filled('barangay_id')) {
             $query->where('barangay_id', $request->barangay_id);
@@ -165,7 +177,12 @@ class DisbursementController extends Controller
             });
         }
 
-        $disbursements = $query->orderByDesc('date')->get();
+        $perPage = $request->get('per_page', 10);
+
+        $disbursements = $query
+            ->latest('created_at')
+            ->paginate($perPage);
+
         $result = $disbursements->map(function ($d) {
             return [
                 'id' => $d->id,
@@ -177,6 +194,7 @@ class DisbursementController extends Controller
                 'bank_name' => $d->bank->bank_name,
                 'payee' => $d->payee,
                 'payee2' => $d->payee2,
+                'bank_status' => $d->bank_status,
                 'dv_amount' => $d->dv_amount,
                 'status' => $d->status,
                 'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
@@ -186,7 +204,14 @@ class DisbursementController extends Controller
         });
         return response()->json([
             'status' => true,
-            'data' => $result
+            'data' => $result->items(),
+
+            'pagination' => [
+                'current_page' => $result->currentPage(),
+                'last_page' => $result->lastPage(),
+                'per_page' => $result->perPage(),
+                'total' => $result->total(),
+            ]
         ]);
     }
 
@@ -206,11 +231,12 @@ class DisbursementController extends Controller
         $request->validate([
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
             'dv_number' => 'required|string|unique:disbursements,dv_number',
-            'cheque_number' => 'required|string',
-            'cheque_date'   => 'nullable|date',
-            'bank_id' => 'required|exists:lib_banks,id',
+
             'payee' => 'required|string',
             'payee2' => 'required|string',
+
+            'bank_status' => 'required|in:online,offline',
+
             'dv_amount' => 'required|numeric|min:0',
             'expenses' => 'array',
             'expenses.*.accountId' => 'required|integer',
@@ -243,52 +269,72 @@ class DisbursementController extends Controller
                 'barangay_id' => $barangayId,
                 'date' => $formattedDate,
                 'dv_number' => $request->dv_number,
-                'cheque_number' => $request->cheque_number,
-                'cheque_date' => $request->cheque_date,
-                'bank_id' => $request->bank_id,
+
                 'payee' => $request->payee,
                 'payee2' => $request->payee2,
                 'dv_amount' => $request->dv_amount,
+
+                'bank_status' => $request->bank_status,
+
                 'status' => 'Unliquidated',
             ]);
 
-            // // update the selected lib_cheque_numbers status to 'Used'
-            // $chequeNumber = $request->cheque_number;
-            // $cheque = LibCheque::where('cheque_number', $chequeNumber)
-            //     ->where('booklet_id', $request->cheque_booklet) // Assuming cheque_booklet is passed in the request
-            //     ->where('status', 'unused')
-            //     ->firstorFail();
-
-            // $cheque->update([
-            //     'status' => 'used',
-            //     'disbursement_id' => $disbursement->id,
-            // ]);
-
-            $usedCheques = [];
+            // ===============================================
+            // Build unique bank cheque list with total amounts
+            // ===============================================
+            $bankChequeTotals = [];
 
             if ($request->has('expenses') && is_array($request->expenses)) {
 
                 foreach ($request->expenses as $expense) {
 
-                    $key = $expense['bank_id'] . ':' . $expense['cheque_number'];
+                    $key = $expense['bank_id'].'_'.$expense['cheque_number'];
 
-                    if (isset($usedCheques[$key])) {
-                        continue;
+                    if (!isset($bankChequeTotals[$key])) {
+
+                        $bankChequeTotals[$key] = [
+                            'bank_id'       => $expense['bank_id'],
+                            'cheque_number' => $expense['cheque_number'],
+                            'cheque_date'   => $expense['cheque_date'],
+                            'amount'        => 0,
+                        ];
                     }
 
-                    $bookletIds = LibBooklet::where('bank_id', $expense['bank_id'])->pluck('id');
+                    $bankChequeTotals[$key]['amount'] += (float) $expense['amount'];
+                }
+            }
 
-                    $cheque = LibCheque::where('cheque_number', $expense['cheque_number'])
-                        ->whereIn('booklet_id', $bookletIds)
-                        ->where('status', 'unused')
-                        ->firstOrFail();
+            // ===============================================
+            // Save one BankCheque record per cheque
+            // ===============================================
+            foreach ($bankChequeTotals as $cheque) {
 
-                    $cheque->update([
+                BankCheque::create([
+                    'disbursement_id' => $disbursement->id,
+                    'bank_id'         => $cheque['bank_id'],
+                    'cheque_number'   => $cheque['cheque_number'],
+                    'cheque_date'     => $cheque['cheque_date'],
+                    'amount'          => $cheque['amount'],
+                ]);
+
+                // ===============================================
+                // Mark cheque as USED
+                // ===============================================
+                $bookletIds = LibBooklet::where('bank_id', $cheque['bank_id'])
+                    ->pluck('id');
+
+                $libCheque = LibCheque::whereIn('booklet_id', $bookletIds)
+                    ->where('cheque_number', $cheque['cheque_number'])
+                    ->where('status', 'unused')
+                    ->first();
+
+                if ($libCheque) {
+
+                    $libCheque->update([
                         'status' => 'used',
                         'disbursement_id' => $disbursement->id,
                     ]);
 
-                    $usedCheques[$key] = true;
                 }
             }
 
@@ -341,15 +387,26 @@ class DisbursementController extends Controller
 
             // Log created disbursement
             try {
-                $disbursement->load('bank');
+
+                $chequeSummary = $disbursement->bankCheques
+                    ->map(function ($cheque) {
+
+                        return sprintf(
+                            '%s - %s (₱%s)',
+                            optional($cheque->bank)->bank_name,
+                            $cheque->cheque_number,
+                            number_format($cheque->amount,2)
+                        );
+
+                    })
+                    ->implode(', ');
+
                 $topLine = sprintf(
-                    '#%s for Payee "%s" with the amount ₱%s. Uses %s with the cheque: %s',
+                    '#%s for Payee "%s" with the amount ₱%s. Cheques: %s',
                     $disbursement->dv_number,
                     $disbursement->payee,
-                    number_format((float)$disbursement->dv_amount, 2),
-                    $disbursement->bank ? '(' . $disbursement->bank->bank_name . ')' : '(bank)',
-                    $disbursement->cheque_number,
-                    $disbursement->cheque_date
+                    number_format($disbursement->dv_amount,2),
+                    $chequeSummary
                 );
                 // Header log
                 AdminAuthController::logUserAction(
@@ -398,9 +455,7 @@ class DisbursementController extends Controller
                 \Illuminate\Validation\Rule::unique('fund_transfers', 'dv_number'),
             ],
             'ref_dv_number' => 'required|string|exists:disbursements,dv_number',
-            'cheque_number' => 'required|string',
-            'cheque_date' => 'nullable|date',
-            'bank_id' => 'required|exists:lib_banks,id',
+
             'payee' => 'required|string',
             'payee2' => 'required|string',
             'dv_amount' => 'required|numeric|min:0',
@@ -731,7 +786,6 @@ class DisbursementController extends Controller
         }
     }
 
-
     // GET /api/barangay/disbursements/{id}/or-details
     public function getOrDetails($id)
     {
@@ -930,7 +984,12 @@ class DisbursementController extends Controller
         try {
             $user = request()->user();
 
-            $query = Disbursement::with(['bank', 'cheque.booklet', 'expenseDetails.appropriation.expenseClass', 'expenseDetails.appropriation.expenseType', 'expenseDetails.appropriation.expenseItem', 'expenseDetails.appropriation.expenseSubItem']);
+            $query = Disbursement::with([
+                'bankCheques.bank',
+                'expenseDetails.appropriation.expenseClass',
+                'expenseDetails.appropriation.expenseType',
+                'expenseDetails.appropriation.expenseItem',
+                'expenseDetails.appropriation.expenseSubItem']);
 
             // If user is authenticated and has barangay_id, filter by it
             if ($user && isset($user->barangay_id)) {
@@ -986,13 +1045,20 @@ class DisbursementController extends Controller
                 'date' => $disbursement->date,
                 'dv_number' => $disbursement->dv_number,
                 'ref_dv_number' => $disbursement->ref_dv_number ?? null,
-                'cheque_number' => $disbursement->cheque_number,
-                'cheque_date' => $disbursement->cheque_date,
-                'bank_id' => $disbursement->bank_id,
-                'bank_name' => $disbursement->bank ? $disbursement->bank->bank_name : null,
-                'booklet_id' => $disbursement->cheque ? $disbursement->cheque->booklet_id : null,
+
+                'bank_cheques' => $disbursement->bankCheques->map(function ($cheque) {
+                    return [
+                        'id' => $cheque->id,
+                        'bank_id' => $cheque->bank_id,
+                        'bank_name' => optional($cheque->bank)->bank_name,
+                        'cheque_number' => $cheque->cheque_number,
+                        'cheque_date' => $cheque->cheque_date,
+                        'amount' => $cheque->amount,
+                    ];
+                }),
                 'payee' => $disbursement->payee,
                 'payee2' => $disbursement->payee2,
+                'bank_status' => $disbursement->bank_status,
                 'dv_amount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -1024,11 +1090,16 @@ class DisbursementController extends Controller
                     'date' => $reimbursement->date,
                     'dv_number' => $reimbursement->dv_number,
                     'ref_dv_number' => $reimbursement->ref_dv_number ?? null,
-                    'cheque_number' => $reimbursement->cheque_number,
-                    'cheque_date' => $reimbursement->cheque_date,
-                    'bank_id' => $reimbursement->bank_id,
-                    'bank_name' => $reimbursement->bank ? $reimbursement->bank->bank_name : null,
-                    'booklet_id' => $reimbursement->cheque ? $reimbursement->cheque->booklet_id : null,
+                    'bank_cheques' => $reimbursement->bankCheques->map(function ($cheque) {
+                        return [
+                            'id' => $cheque->id,
+                            'bank_id' => $cheque->bank_id,
+                            'bank_name' => optional($cheque->bank)->bank_name,
+                            'cheque_number' => $cheque->cheque_number,
+                            'cheque_date' => $cheque->cheque_date,
+                            'amount' => $cheque->amount,
+                        ];
+                    }),
                     'payee' => $reimbursement->payee,
                     'payee2' => $reimbursement->payee2,
                     'dv_amount' => $reimbursement->dv_amount,

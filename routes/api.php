@@ -25,6 +25,7 @@ use App\Http\Controllers\Library\DeductionLibraryController;
 use App\Http\Controllers\Library\FundCategoryController;
 use App\Http\Controllers\Library\RegisteredPayeeController;
 use App\Http\Controllers\ChequeController;
+use App\Http\Controllers\BarangaySetupController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -77,6 +78,12 @@ Route::prefix('barangay')->group(function () {
         // Profile management routes
         Route::put('/update-profile', [AuthController::class, 'updateProfile']);
         Route::put('/change-password', [AuthController::class, 'changePassword']);
+
+        //Barangay Setup
+        Route::get('/setup', [BarangaySetupController::class, 'index']);
+        Route::post('/setup', [BarangaySetupController::class, 'store']);
+        Route::put('/setup', [BarangaySetupController::class, 'update']);
+        // Route::get('/setup/{id}', [BarangaySetupController::class, 'show']);
 
         //Accounts Library
 

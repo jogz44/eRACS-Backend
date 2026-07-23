@@ -44,6 +44,9 @@ class BirRemittanceController extends Controller
             'cheque_number' => 'required|string',
             'cheque_date'   => 'nullable|date',
             'bank_id'       => 'required|exists:lib_banks,id',
+
+            'bank_status' => 'required|in:Online,Offline',
+
             'dv_amount'     => 'required|numeric|min:0.01',
         ]);
 
@@ -62,6 +65,9 @@ class BirRemittanceController extends Controller
             'cheque_number' => $request->cheque_number,
             'cheque_date'    => $request->cheque_date,
             'bank_id'       => $request->bank_id,
+
+            'bank_status' => $request->bank_status,
+
             'payee'         => 'Bureau of Internal Revenue',
             'dv_amount'     => $request->dv_amount,
             'status'        => 'Unliquidated',
@@ -218,7 +224,7 @@ class BirRemittanceController extends Controller
         return response()->json(['status' => true, 'message' => 'Void rejected']);
     }
 
-    // GET /api/barangay/bir-remittances/pending-tax-total
+    //GET /api/barangay/bir-remittances/pending-tax-total
     // public function pendingTaxTotal(Request $request)
     // {
     //     $user = $request->user();
@@ -267,6 +273,7 @@ class BirRemittanceController extends Controller
             'cheque_date'       => $d->cheque_date,
             'bank_id'           => $d->bank_id,
             'bank_name'         => $d->bank?->bank_name,
+            'bank_status'       => $d->bank_status,
             'payee'             => $d->payee,
             'dv_amount'         => $d->dv_amount,
             'status'            => $d->status,
