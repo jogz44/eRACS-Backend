@@ -7,6 +7,8 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class AuthTokenValid
 {
@@ -68,9 +70,18 @@ class AuthTokenValid
         // 7. Continue request
         $response = $next($request);
 
-        // 7. Wrap JSON response
-        if ($request->wantsJson() && $response->getStatusCode() === 200) {
-            $originalData = json_decode($response->content(), true) ?? [];
+        // 7. Wrap JSON response only
+        // Skip wrapping for file downloads
+        if ($response instanceof BinaryFileResponse) {
+            return $response;
+        }
+
+        if (
+            $request->wantsJson() &&
+            $response instanceof JsonResponse &&
+            $response->getStatusCode() === 200
+        ) {
+            $originalData = $response->getData(true);
 
             if (!isset($originalData['status'])) {
                 $response->setData([

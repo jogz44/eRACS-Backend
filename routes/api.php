@@ -26,6 +26,7 @@ use App\Http\Controllers\Library\FundCategoryController;
 use App\Http\Controllers\Library\RegisteredPayeeController;
 use App\Http\Controllers\ChequeController;
 use App\Http\Controllers\BarangaySetupController;
+use App\Http\Controllers\BankExportController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -82,8 +83,8 @@ Route::prefix('barangay')->group(function () {
         //Barangay Setup
         Route::get('/setup', [BarangaySetupController::class, 'index']);
         Route::post('/setup', [BarangaySetupController::class, 'store']);
-        Route::put('/setup', [BarangaySetupController::class, 'update']);
-        // Route::get('/setup/{id}', [BarangaySetupController::class, 'show']);
+        Route::get('/setup/{id}', [BarangaySetupController::class, 'show']);
+        Route::put('/setup/{id}', [BarangaySetupController::class, 'update']);
 
         //Accounts Library
 
@@ -207,6 +208,8 @@ Route::prefix('barangay')->group(function () {
         Route::post('disbursements/or-photo/upload', [DisbursementController::class, 'uploadOrPhoto']);
         // Delete OR photo
         Route::delete('disbursements/or-photo/delete', [DisbursementController::class, 'deleteOrPhoto']);
+        //generate text file for online disbursement
+        Route::post('/disbursements/{id}/export', [BankExportController::class, 'export']);
 
         // DEDUCTIONS
         Route::get('deductions', [DeductionController::class, 'index']);

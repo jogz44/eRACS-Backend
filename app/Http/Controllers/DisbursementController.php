@@ -12,6 +12,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
 use App\Models\BankCheque;
+use App\Models\BankExportFile;
+use App\Models\BarangaySetup;
 
 class DisbursementController extends Controller
 {
@@ -279,6 +281,10 @@ class DisbursementController extends Controller
                 'status' => 'Unliquidated',
             ]);
 
+            \Log::info('Bank Status Received', [
+                'bank_status' => $request->bank_status
+            ]);
+
             // ===============================================
             // Build unique bank cheque list with total amounts
             // ===============================================
@@ -424,6 +430,46 @@ class DisbursementController extends Controller
                 }
             } catch (\Throwable $logEx) {
                 \Log::warning('Failed to write disbursement logs: ' . $logEx->getMessage());
+            }
+
+            //this block pertaining the checking of online disbursement
+            if ($request->bank_status === 'online') {
+
+                \Log::info('ONLINE BLOCK REACHED');
+
+                $setup = BarangaySetup::where(
+                    'barangay_id',
+                    $barangayId
+                )->first();
+
+                \Log::info('Barangay Setup', [
+                    'setup' => $setup
+                ]);
+
+                if ($setup) {
+
+                    \Log::info('Creating BankExportFile');
+
+                    $filename = sprintf(
+                        'BANK_EXPORT_%d_%s.txt',
+                        $disbursement->id,
+                        now()->format('YmdHis')
+                    );
+
+                    BankExportFile::create([
+                        'disbursement_id'   => $disbursement->id,
+                        'barangay_setup_id' => $setup->id,
+                        'generated_by'      => $user->id,
+
+                        'filename'          => $filename,
+                        'filepath'          => '',
+
+                        'is_exported'       => false,
+                        'exported_at'       => null,
+                    ]);
+
+                    \Log::info('BankExportFile Created');
+                }
             }
 
             return response()->json([

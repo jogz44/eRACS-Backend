@@ -24,7 +24,7 @@ class Disbursement extends Model
         'payee2',
 
         'bank_status',
-        
+
         'dv_amount',
         'status',
         'liquidated_amount',
@@ -67,5 +67,11 @@ class Disbursement extends Model
     public function bankCheques()
     {
         return $this->hasMany(BankCheque::class, 'disbursement_id');
+    }
+
+    //relation for generated txt file
+    public function bankExport()
+    {
+        return $this->hasOne(BankExportFile::class);
     }
 }

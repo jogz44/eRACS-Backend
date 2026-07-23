@@ -84,10 +84,8 @@ class BarangaySetupController extends Controller
     /**
      * Display one barangay setup.
      */
-    public function show(Request $request)
+    public function show($id)
     {
-        $user = $request->user();
-
         $setup = BarangaySetup::with([
             'barangay',
             'user',
@@ -95,9 +93,7 @@ class BarangaySetupController extends Controller
             'bank',
             'notedByPosition',
             'certifiedByPosition',
-        ])
-        ->where('barangay_id', $user->barangay_id)
-        ->firstOrFail();
+        ])->findOrFail($id);
 
         return response()->json([
             'status' => true,
@@ -108,12 +104,9 @@ class BarangaySetupController extends Controller
     /**
      * Update barangay setup.
      */
-    public function update(Request $request)
+    public function update(Request $request, $id)
     {
-        $user = $request->user();
-
-        $setup = BarangaySetup::where('barangay_id', $user->barangay_id)
-            ->firstOrFail();
+        $setup = BarangaySetup::findOrFail($id);
 
         $request->validate([
             'registered_user_id' => 'required|exists:barangay_users,id',
