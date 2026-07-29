@@ -95,17 +95,16 @@ class DisbursementController extends Controller
             );
         }
 
-        $perPage = $request->get('per_page', 10);
-
         $disbursements = $query
             ->latest('created_at')
-            ->paginate($perPage);
+            ->get();
 
-        $result = $disbursements->through(function ($detail) {
+        $result = $disbursements->map(function ($detail) {
             $d = $detail->disbursement;
+
             return [
                 'id' => $d->id,
-                'row_id' => $d->id.'-'.$detail->id,
+                'row_id' => $d->id . '-' . $detail->id,
                 'disbursement_id' => $d->id,
                 'expense_detail_id' => $detail->id,
 
@@ -125,7 +124,7 @@ class DisbursementController extends Controller
                         'cheque_date' => $cheque->cheque_date,
                         'amount' => $cheque->amount,
                     ];
-                }),
+                })->values(),
 
                 'particular' => $detail->particulars,
                 'dv_amount' => $detail->amount,
@@ -143,14 +142,7 @@ class DisbursementController extends Controller
 
         return response()->json([
             'status' => true,
-            'data' => $result->items(),
-
-            'pagination' => [
-                'current_page' => $result->currentPage(),
-                'last_page' => $result->lastPage(),
-                'per_page' => $result->perPage(),
-                'total' => $result->total(),
-            ]
+            'data' => $result,
         ]);
     }
 
@@ -179,11 +171,9 @@ class DisbursementController extends Controller
             });
         }
 
-        $perPage = $request->get('per_page', 10);
-
         $disbursements = $query
             ->latest('created_at')
-            ->paginate($perPage);
+            ->get();
 
         $result = $disbursements->map(function ($d) {
             return [
@@ -206,14 +196,7 @@ class DisbursementController extends Controller
         });
         return response()->json([
             'status' => true,
-            'data' => $result->items(),
-
-            'pagination' => [
-                'current_page' => $result->currentPage(),
-                'last_page' => $result->lastPage(),
-                'per_page' => $result->perPage(),
-                'total' => $result->total(),
-            ]
+            'data' => $disbursements
         ]);
     }
 
@@ -288,8 +271,13 @@ class DisbursementController extends Controller
             // ===============================================
             // Build unique bank cheque list with total amounts
             // ===============================================
+            \Log::info('Expenses received', [
+                'expenses' => $request->expenses
+            ]);
+
             $bankChequeTotals = [];
 
+            \Log::info('FULL REQUEST', $request->all());
             if ($request->has('expenses') && is_array($request->expenses)) {
 
                 foreach ($request->expenses as $expense) {
@@ -314,6 +302,8 @@ class DisbursementController extends Controller
             // Save one BankCheque record per cheque
             // ===============================================
             foreach ($bankChequeTotals as $cheque) {
+
+                \Log::info('Saving cheque', $cheque);
 
                 BankCheque::create([
                     'disbursement_id' => $disbursement->id,

@@ -16,9 +16,9 @@ class BarangaySetup extends Model
 
         'barangay_position_id',
 
-        'bank_id',
-
-        'account_number',
+        //transfered to brgy bank accounts table for multiple accnts
+        // 'bank_id',
+        // 'account_number',
 
         'noted_by',
         'noted_by_position_id',
@@ -84,5 +84,21 @@ class BarangaySetup extends Model
     public function getCertifiedByPositionNameAttribute()
     {
         return optional($this->certifiedByPosition)->name;
+    }
+
+    public function bankAccounts()
+    {
+        return $this->hasMany(
+            BarangayBankAccount::class,
+            'barangay_setup_id'
+        );
+    }
+
+    public function defaultBankAccount()
+    {
+        return $this->hasOne(
+            BarangayBankAccount::class,
+            'barangay_setup_id'
+        )->where('is_default', true);
     }
 }
