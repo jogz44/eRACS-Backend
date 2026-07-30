@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\FundTransfer;
+use App\Models\FundTransferBankCheque;
 use App\Models\LibBooklet;
 use App\Models\LibCheque;
 use App\Models\LibFiscalYear;
@@ -16,108 +17,210 @@ class FundTransferController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+
         if (!$user) {
-            return response()->json(['status' => false, 'message' => 'Unauthenticated'], 401);
+            return response()->json([
+                'status' => false,
+                'message' => 'Unauthenticated'
+            ], 401);
         }
 
-        $year = $request->input('year', now()->year);
+        $query = FundTransfer::with([
+            'bankCheques.bank',
+            'barangay'
+        ])->where('barangay_id', $user->barangay_id);
 
-        $items = FundTransfer::with(['bank', 'barangay'])
-            ->where('barangay_id', $user->barangay_id)
-            ->whereYear('date', $year)
-            ->orderByDesc('date')
+        if ($request->filled('year')) {
+            $query->whereYear('date', $request->year);
+        } else {
+            $query->whereYear('date', now()->year);
+        }
+
+        $items = $query
+            ->latest('date')
             ->get()
-            ->map(fn($d) => $this->format($d));
+            ->map(fn ($d) => $this->format($d));
 
-        return response()->json(['status' => true, 'data' => $items]);
+        return response()->json([
+            'status' => true,
+            'count' => $items->count(),
+            'data' => $items
+        ]);
+    }
+
+    // GET /api/admin/fund-transfers
+    public function adminIndex(Request $request)
+    {
+        $query = FundTransfer::with([
+            'bankCheques.bank',
+            'barangay'
+        ]);
+
+        // Optional barangay filter
+        if ($request->filled('barangay_id')) {
+            $query->where('barangay_id', $request->barangay_id);
+        }
+
+        // Optional year filter
+        if ($request->filled('year')) {
+            $query->whereYear('date', $request->year);
+        } else {
+            $query->whereYear('date', now()->year);
+        }
+
+        $items = $query
+            ->latest('date')
+            ->get()
+            ->map(fn ($d) => $this->format($d));
+
+        return response()->json([
+            'status' => true,
+            'count' => $items->count(),
+            'data' => $items
+        ]);
     }
 
     // POST /api/barangay/fund-transfers
     public function store(Request $request)
     {
-        $request->validate([
+        $validated = $request->validate([
             'type'          => 'required|in:sk,provincial_aid',
             'date'          => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
-            // 'dv_number'     => 'required|string|unique:fund_transfers,dv_number',
+
             'dv_number' => [
                 'required',
                 'string',
                 \Illuminate\Validation\Rule::unique('disbursements', 'dv_number'),
             ],
-            'cheque_number' => 'required|string',
-            'cheque_date'   => 'nullable|date',
-            'bank_id'       => 'required|exists:lib_banks,id',
 
-            'bank_status'   => 'required|in:online,offline',
+            'bank_cheques' => 'required|array|min:1',
+            'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
+            'bank_cheques.*.cheque_number' => 'required|string',
+            'bank_cheques.*.cheque_date' => 'nullable|date',
+            'bank_cheques.*.bank_status' => 'required|in:online,offline',
+            'bank_cheques.*.amount' => 'required|numeric|min:0',
 
-            'payee'         => 'required|string|max:255',
-            'amount'        => 'required|numeric|min:0.01',
-            'remarks'       => 'nullable|string|max:1000',
+            'payee'   => 'required|string|max:255',
+            'amount'  => 'required|numeric|min:0.01',
+            'remarks' => 'nullable|string|max:1000',
         ]);
 
-        $user = $request->user();
+        DB::beginTransaction();
 
-        [$dd, $mm, $yyyy] = explode('/', $request->date);
-        $formattedDate = "$yyyy-$mm-$dd";
+        try {
 
-        $fiscalYear = LibFiscalYear::where('year', $yyyy)->first();
-        if (!$fiscalYear) {
-            return response()->json(['status' => false, 'message' => "No fiscal year found for $yyyy"], 422);
+            $user = $request->user();
+
+            [$dd, $mm, $yyyy] = explode('/', $validated['date']);
+            $formattedDate = "$yyyy-$mm-$dd";
+
+            $firstCheque = $validated['bank_cheques'][0];
+
+            $fiscalYear = LibFiscalYear::where('year', $yyyy)->first();
+
+            if (!$fiscalYear) {
+                return response()->json([
+                    'status' => false,
+                    'message' => "No fiscal year found for $yyyy"
+                ], 422);
+            }
+
+            // Parent record
+            $record = FundTransfer::create([
+
+                'barangay_id'    => $user->barangay_id,
+                'type'           => $validated['type'],
+                'fiscal_year_id' => $fiscalYear->id,
+                'date'           => $formattedDate,
+                'dv_number'      => $validated['dv_number'],
+
+                // Required by existing table
+                'bank_id'        => $firstCheque['bank_id'],
+                'cheque_number'  => $firstCheque['cheque_number'],
+                'cheque_date'    => $firstCheque['cheque_date'] ?? null,
+                'bank_status'    => $firstCheque['bank_status'],
+
+                'payee'          => $validated['payee'],
+                'amount'         => $validated['amount'],
+                'remarks'        => $validated['remarks'] ?? null,
+                'status'         => 'Unliquidated',
+                'user_id'        => $user->id,
+            ]);
+
+            // Save ALL cheque rows
+            foreach ($validated['bank_cheques'] as $row) {
+
+                FundTransferBankCheque::create([
+
+                    'fund_transfer_id' => $record->id,
+                    'bank_id'          => $row['bank_id'],
+                    'cheque_number'    => $row['cheque_number'],
+                    'cheque_date'      => $row['cheque_date'] ?? null,
+                    'bank_status'      => $row['bank_status'],
+                    'amount'           => $row['amount'],
+
+                ]);
+
+                // Mark cheque as used
+                $booklets = LibBooklet::where('bank_id', $row['bank_id'])
+                    ->pluck('id');
+
+                $libCheque = LibCheque::where('cheque_number', $row['cheque_number'])
+                    ->whereIn('booklet_id', $booklets)
+                    ->where('status', 'unused')
+                    ->first();
+
+                if ($libCheque) {
+
+                    $libCheque->update([
+                        'status' => 'used',
+                        'disbursement_id' => $record->id,
+                    ]);
+
+                }
+            }
+
+            (new \App\Http\Controllers\Library\BankLibraryController())
+                ->updateBanksStatus();
+
+            DB::commit();
+
+            AdminAuthController::logUserAction(
+                $user,
+                'Created Fund Transfer',
+                sprintf(
+                    '#%s [%s] payee "%s" amount ₱%s (%d cheque(s))',
+                    $record->dv_number,
+                    strtoupper($record->type),
+                    $record->payee,
+                    number_format($record->amount, 2),
+                    count($validated['bank_cheques'])
+                )
+            );
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Fund Transfer created successfully.',
+                'data' => $record->load('bankCheques.bank'),
+            ], 201);
+
+        } catch (\Exception $e) {
+
+            DB::rollBack();
+
+            return response()->json([
+                'status' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+
         }
-
-        $record = FundTransfer::create([
-            'barangay_id'    => $user->barangay_id,
-            'type'           => $request->type,
-            'fiscal_year_id' => $fiscalYear->id,
-            'date'           => $formattedDate,
-            'dv_number'      => $request->dv_number,
-            'cheque_number'  => $request->cheque_number,
-            'cheque_date'    => $request->cheque_date,
-            'bank_id'        => $request->bank_id,
-
-            'bank_status'    => $request->bank_status,
-
-            'payee'          => $request->payee,
-            'amount'         => $request->amount,
-            'remarks'        => $request->remarks,
-            'status'         => 'Unliquidated',
-            'user_id'        => $user->id,
-        ]);
-
-        // Mark cheque as used
-        $booklets = LibBooklet::where('bank_id', $request->bank_id)->pluck('id');
-        $cheque = LibCheque::where('cheque_number', $request->cheque_number)
-            ->whereIn('booklet_id', $booklets)
-            ->where('status', 'unused')
-            ->first();
-
-        if ($cheque) {
-            $cheque->update(['status' => 'used', 'disbursement_id' => $record->id]);
-        }
-
-        (new \App\Http\Controllers\Library\BankLibraryController())->updateBanksStatus();
-
-        AdminAuthController::logUserAction(
-            $user,
-            'Created Fund Transfer',
-            sprintf(
-                '#%s [%s] payee "%s" amount ₱%s cheque %s',
-                $record->dv_number,
-                strtoupper($record->type),
-                $record->payee,
-                number_format($record->amount, 2),
-                $record->cheque_number
-            )
-        );
-
-        return response()->json(['status' => true, 'message' => 'Fund transfer created', 'data' => $record], 201);
     }
 
     // GET /api/barangay/fund-transfers/{id}
     public function show(Request $request, $id)
     {
         $user = $request->user();
-        $record = FundTransfer::with(['bank', 'barangay'])
+        $record = FundTransfer::with(['bankCheques.bank', 'barangay'])
             ->where('barangay_id', $user->barangay_id)
             ->findOrFail($id);
 
@@ -256,12 +359,18 @@ class FundTransferController extends Controller
             'id'            => $d->id,
             'date'          => $d->date,
             'dv_number'     => $d->dv_number,
-            'cheque_number' => $d->cheque_number,
-            'cheque_date'   => $d->cheque_date,
-            'bank_id'       => $d->bank_id,
-            'bank_name'     => $d->bank?->bank_name,
 
-            'bank_status'   => $d->bank_status,
+            'bank_cheques' => $d->bankCheques->map(function ($c) {
+                return [
+                    'id' => $c->id,
+                    'bank_id' => $c->bank_id,
+                    'bank_name' => optional($c->bank)->bank_name,
+                    'cheque_number' => $c->cheque_number,
+                    'cheque_date' => $c->cheque_date,
+                    'bank_status' => $c->bank_status,
+                    'amount' => $c->amount,
+                ];
+            }),
 
             'payee'         => $d->payee,
             'dvAmount'      => $d->amount,

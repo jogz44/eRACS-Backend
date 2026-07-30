@@ -371,7 +371,7 @@ Route::prefix('admin')->group(function () {
         Route::get('disbursements/{id}/deductions', [DeductionController::class, 'getByDisbursement']);
 
         // Admin fund-transfers and bir-remittances
-        Route::get('/fund-transfers', [FundTransferController::class, 'index']);
+        Route::get('/fund-transfers', [FundTransferController::class, 'adminIndex']);
         Route::get('/bir-remittances', [BirRemittanceController::class, 'index']);
 
         // Deductions (Admin View)

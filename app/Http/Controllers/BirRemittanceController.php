@@ -16,19 +16,40 @@ class BirRemittanceController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+
         if (!$user) {
-            return response()->json(['status' => false, 'message' => 'Unauthenticated'], 401);
+            return response()->json([
+                'status' => false,
+                'message' => 'Unauthenticated'
+            ], 401);
         }
 
-        $query = BirRemittance::with(['bankCheques.bank', 'barangay'])
-            ->where('barangay_id', $user->barangay_id);
+        $query = BirRemittance::with([
+            'bankCheques.bank',
+            'barangay'
+        ]);
+
+        // Admin can choose barangay
+        if ($request->filled('barangay_id')) {
+            $query->where('barangay_id', $request->barangay_id);
+        } else {
+            // Barangay users
+            $query->where('barangay_id', $user->barangay_id);
+        }
 
         $year = $request->input('year', now()->year);
+
         $query->whereYear('date', $year);
 
-        $items = $query->orderByDesc('date')->get()->map(fn($d) => $this->format($d));
+        $items = $query
+            ->orderByDesc('date')
+            ->get()
+            ->map(fn ($d) => $this->format($d));
 
-        return response()->json(['status' => true, 'data' => $items]);
+        return response()->json([
+            'status' => true,
+            'data' => $items,
+        ]);
     }
 
     // POST /api/barangay/bir-remittances
@@ -314,18 +335,6 @@ class BirRemittanceController extends Controller
 
         return response()->json(['status' => true, 'message' => 'Void rejected']);
     }
-
-    //GET /api/barangay/bir-remittances/pending-tax-total
-    // public function pendingTaxTotal(Request $request)
-    // {
-    //     $user = $request->user();
-    //     // Sum unliquidated BIR remittances for this barangay as "pending tax"
-    //     $total = BirRemittance::where('barangay_id', $user->barangay_id)
-    //         ->whereIn('status', ['Unliquidated', 'Partial'])
-    //         ->sum('dv_amount');
-
-    //     return response()->json(['status' => true, 'pending_total' => (float) $total]);
-    // }
 
     public function pendingTaxTotal(Request $request)
     {

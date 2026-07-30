@@ -17,7 +17,7 @@ class FundTransfer extends Model
         'bank_id',
 
         'bank_status',
-        
+
         'payee',
         'amount',
         'remarks',
@@ -43,5 +43,13 @@ class FundTransfer extends Model
     public function user()
     {
         return $this->belongsTo(BarangayUser::class, 'user_id');
+    }
+
+    public function bankCheques()
+    {
+        return $this->hasMany(
+            FundTransferBankCheque::class,
+            'fund_transfer_id'
+        );
     }
 }

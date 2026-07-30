@@ -66,7 +66,6 @@ class DisbursementController extends Controller
         }
 
         $query = TranExpenseDetail::with([
-            'bank',
             'appropriation.expenseClass.fiscalYear',
             'disbursement.barangay',
             'disbursement.bankCheques.bank',
@@ -146,57 +145,89 @@ class DisbursementController extends Controller
         ]);
     }
 
-    // GET /api/admin/disbursements - Admin endpoint to fetch disbursements across all barangays
+    // GET /api/admin/disbursements
     public function adminIndex(Request $request)
     {
         $query = TranExpenseDetail::with([
-            'bank',
             'appropriation.expenseClass.fiscalYear',
             'disbursement.barangay',
             'disbursement.bankCheques.bank',
         ]);
 
         if ($request->filled('barangay_id')) {
-            $query->where('barangay_id', $request->barangay_id);
+            $query->whereHas('disbursement', function ($q) use ($request) {
+                $q->where('barangay_id', $request->barangay_id);
+            });
         }
 
-        // Add year filter — same logic as index()
+        // Year filter
         if ($request->filled('year')) {
-            $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function ($q) use ($request) {
+            $query->whereHas('appropriation.expenseClass.fiscalYear', function ($q) use ($request) {
                 $q->where('year', $request->year);
             });
         } else {
-            $query->whereHas('expenseDetails.appropriation.expenseClass.fiscalYear', function ($q) {
+            $query->whereHas('appropriation.expenseClass.fiscalYear', function ($q) {
                 $q->where('year', now()->year);
             });
         }
 
-        $disbursements = $query
+        $expenseDetails = $query
             ->latest('created_at')
             ->get();
 
-        $result = $disbursements->map(function ($d) {
+        $result = $expenseDetails->map(function ($detail) {
+
+            $d = $detail->disbursement;
+
             return [
+
                 'id' => $d->id,
+                'row_id' => $d->id . '-' . $detail->id,
+
+                'disbursement_id' => $d->id,
+                'expense_detail_id' => $detail->id,
+
                 'date' => $d->date,
                 'dv_number' => $d->dv_number,
-                'cheque_number' => $d->cheque_number,
-                'cheque_date' => $d->cheque_date,
-                'bank_id' => $d->bank_id,
-                'bank_name' => $d->bank->bank_name,
+
                 'payee' => $d->payee,
                 'payee2' => $d->payee2,
+
                 'bank_status' => $d->bank_status,
-                'dv_amount' => $d->dv_amount,
+
+                'bank_cheques' => $d->bankCheques->map(function ($cheque) {
+
+                    return [
+
+                        'id' => $cheque->id,
+                        'bank_id' => $cheque->bank_id,
+                        'bank_name' => optional($cheque->bank)->bank_name,
+                        'cheque_number' => $cheque->cheque_number,
+                        'cheque_date' => $cheque->cheque_date,
+                        'bank_status' => $cheque->bank_status,
+                        'amount' => $cheque->amount,
+
+                    ];
+
+                })->values(),
+
+                'particular' => $detail->particulars,
+                'dv_amount' => $detail->amount,
+
                 'status' => $d->status,
-                'barangay_name' => $d->barangay ? $d->barangay->name : 'Unknown',
+                'remarks' => $d->remarks,
+                'rejection_remarks' => $d->rejection_remarks,
+
+                'barangay_name' => optional($d->barangay)->name ?? 'Unknown',
+
                 'created_at' => $d->created_at,
                 'updated_at' => $d->updated_at,
             ];
         });
+
         return response()->json([
             'status' => true,
-            'data' => $disbursements
+            'data' => $result,
         ]);
     }
 
@@ -2052,7 +2083,13 @@ class DisbursementController extends Controller
         try {
             $user = $request->user();
 
-            $query = TranExpenseDetail::with(['appropriation.expenseClass', 'appropriation.expenseType', 'appropriation.expenseItem', 'appropriation.expenseSubItem', 'disbursement']);
+            $query = TranExpenseDetail::with([
+                'appropriation.expenseClass',
+                'appropriation.expenseType',
+                'appropriation.expenseItem',
+                'appropriation.expenseSubItem',
+                'disbursement.bankCheques.bank'
+            ]);
 
             // Determine target barangay: allow explicit barangay_id (for admin), else fallback to user's barangay
             $targetBarangayId = $request->input('barangay_id');
@@ -2118,6 +2155,19 @@ class DisbursementController extends Controller
                     'dv_number' => optional($detail->disbursement)->dv_number,
                     'payee' => optional($detail->disbursement)->payee,
                     'payee2' => optional($detail->disbursement)->payee2,
+                    'bank_cheques' => optional($detail->disbursement)
+                        ->bankCheques
+                        ->map(function ($cheque) {
+                            return [
+                                'id' => $cheque->id,
+                                'bank_id' => $cheque->bank_id,
+                                'bank_name' => optional($cheque->bank)->bank_name,
+                                'cheque_number' => $cheque->cheque_number,
+                                'cheque_date' => $cheque->cheque_date,
+                                'bank_status' => $cheque->bank_status,
+                                'amount' => $cheque->amount,
+                            ];
+                        })->values(),
                     'accountTitle' => $accountTitle,
                     'created_at' => $detail->created_at,
                     'updated_at' => $detail->updated_at,
