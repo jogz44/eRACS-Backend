@@ -48,7 +48,7 @@ class FundTransferController extends Controller
             'cheque_date'   => 'nullable|date',
             'bank_id'       => 'required|exists:lib_banks,id',
 
-            'bank_status'   => 'required|in:Online,Offline',
+            'bank_status'   => 'required|in:online,offline',
 
             'payee'         => 'required|string|max:255',
             'amount'        => 'required|numeric|min:0.01',
@@ -262,7 +262,7 @@ class FundTransferController extends Controller
             'bank_name'     => $d->bank?->bank_name,
 
             'bank_status'   => $d->bank_status,
-            
+
             'payee'         => $d->payee,
             'dvAmount'      => $d->amount,
             'dv_amount'     => $d->amount,

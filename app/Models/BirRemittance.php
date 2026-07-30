@@ -11,12 +11,12 @@ class BirRemittance extends Model
         'date',
         'dv_number',
         'ref_dv_number',
+
         'cheque_number',
         'cheque_date',
         'bank_id',
-
         'bank_status',
-        
+
         'payee',
         'dv_amount',
         'liquidated_amount',
@@ -40,5 +40,13 @@ class BirRemittance extends Model
     public function user()
     {
         return $this->belongsTo(BarangayUser::class, 'user_id');
+    }
+
+    public function bankCheques()
+    {
+        return $this->hasMany(
+            BirBankCheque::class,
+            'bir_remittance_id'
+        );
     }
 }

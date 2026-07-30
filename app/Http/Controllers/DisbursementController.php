@@ -269,18 +269,44 @@ class DisbursementController extends Controller
             ]);
 
             // ===============================================
-            // Build unique bank cheque list with total amounts
+            // Build bank cheque list
             // ===============================================
-            \Log::info('Expenses received', [
-                'expenses' => $request->expenses
-            ]);
+
+            \Log::info('FULL REQUEST', $request->all());
 
             $bankChequeTotals = [];
 
-            \Log::info('FULL REQUEST', $request->all());
-            if ($request->has('expenses') && is_array($request->expenses)) {
+            /*
+            |--------------------------------------------------------------------------
+            | Preferred: use bank_cheques from frontend
+            |--------------------------------------------------------------------------
+            */
+            if ($request->filled('bank_cheques') && is_array($request->bank_cheques)) {
+
+                foreach ($request->bank_cheques as $cheque) {
+
+                    $key = $cheque['bank_id'].'_'.$cheque['cheque_number'];
+
+                    $bankChequeTotals[$key] = [
+                        'bank_id'       => $cheque['bank_id'],
+                        'cheque_number' => $cheque['cheque_number'],
+                        'cheque_date'   => $cheque['cheque_date'] ?? null,
+                        'amount'        => (float) $cheque['amount'],
+                    ];
+                }
+            }
+            /*
+            |--------------------------------------------------------------------------
+            | Fallback: derive cheques from expenses
+            |--------------------------------------------------------------------------
+            */
+            elseif ($request->filled('expenses') && is_array($request->expenses)) {
 
                 foreach ($request->expenses as $expense) {
+
+                    if (empty($expense['bank_id']) || empty($expense['cheque_number'])) {
+                        continue;
+                    }
 
                     $key = $expense['bank_id'].'_'.$expense['cheque_number'];
 
@@ -289,7 +315,7 @@ class DisbursementController extends Controller
                         $bankChequeTotals[$key] = [
                             'bank_id'       => $expense['bank_id'],
                             'cheque_number' => $expense['cheque_number'],
-                            'cheque_date'   => $expense['cheque_date'],
+                            'cheque_date'   => $expense['cheque_date'] ?? null,
                             'amount'        => 0,
                         ];
                     }

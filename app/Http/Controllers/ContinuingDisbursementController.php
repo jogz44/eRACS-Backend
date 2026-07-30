@@ -56,6 +56,9 @@ class ContinuingDisbursementController extends Controller
                 'payee2' => $disbursement->payee2,
 
                 'dvAmount' => $disbursement->dv_amount,
+
+                'bank_status' => $disbursement->bank_status,
+
                 'status' => $disbursement->status,
 
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -130,6 +133,7 @@ class ContinuingDisbursementController extends Controller
                 'payee' => 'required|string|max:255',
                 'payee2' => 'nullable|string|max:255',
                 'amount' => 'required|numeric|min:0',
+                'bank_status' => 'required|in:online,offline',
 
                 // Expenses
                 'expenses' => 'required|array|min:1',
@@ -185,6 +189,9 @@ class ContinuingDisbursementController extends Controller
                 'payee' => $validated['payee'],
                 'payee2' => $validated['payee2'] ?? null,
                 'dv_amount' => $validated['amount'],
+
+                'bank_status' => $validated['bank_status'],
+
                 'status' => 'Unliquidated',
                 'user_id' => $request->user()->id,
             ]);
@@ -330,6 +337,9 @@ class ContinuingDisbursementController extends Controller
             'payee2' => $disbursement->payee2,
 
             'dvAmount' => $disbursement->dv_amount,
+
+            'bank_status' => $disbursement->bank_status,
+
             'status' => $disbursement->status,
 
             'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -417,6 +427,9 @@ class ContinuingDisbursementController extends Controller
             'payee' => 'required|string|max:255',
             'payee2' => 'required|string|max:255',
             'amount' => 'required|numeric|min:0',
+
+            'bank_status' => 'required|in:online,offline',
+
             'expenses' => 'required|array|min:1',
             'expenses.*.accountId' => 'required|exists:cont_appro_accounts,id',
             'expenses.*.particulars' => 'required|string|max:255',
@@ -433,6 +446,9 @@ class ContinuingDisbursementController extends Controller
                 'cheque_number' => $validated['chequeNumber'],
                 'cheque_date' => $validated['cheque_date'],
                 'bank_id' => $validated['bank_id'],
+
+                'bank_status' => $validated['bank_status'],
+
                 'payee' => $validated['payee'],
                 'payee2' => $validated['payee2'],
                 'dv_amount' => $validated['amount'],

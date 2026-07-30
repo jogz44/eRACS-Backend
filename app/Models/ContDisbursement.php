@@ -21,6 +21,9 @@ class ContDisbursement extends Model
         'payee',
         'payee2',
         'dv_amount',
+
+        'bank_status',
+        
         'liquidated_amount',
         'status',
         'user_id',

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\BirRemittance;
+use App\Models\BirBankCheque;
 use App\Models\LibBooklet;
 use App\Models\LibCheque;
 use Illuminate\Http\Request;
@@ -19,7 +20,7 @@ class BirRemittanceController extends Controller
             return response()->json(['status' => false, 'message' => 'Unauthenticated'], 401);
         }
 
-        $query = BirRemittance::with(['bank', 'barangay'])
+        $query = BirRemittance::with(['bankCheques.bank', 'barangay'])
             ->where('barangay_id', $user->barangay_id);
 
         $year = $request->input('year', now()->year);
@@ -33,76 +34,131 @@ class BirRemittanceController extends Controller
     // POST /api/barangay/bir-remittances
     public function store(Request $request)
     {
-        $request->validate([
+        $validated = $request->validate([
             'date'          => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
-            // 'dv_number'     => 'required|string|unique:bir_remittances,dv_number',
+
             'dv_number' => [
                 'required',
                 'string',
                 \Illuminate\Validation\Rule::unique('disbursements', 'dv_number'),
             ],
-            'cheque_number' => 'required|string',
-            'cheque_date'   => 'nullable|date',
-            'bank_id'       => 'required|exists:lib_banks,id',
 
-            'bank_status' => 'required|in:Online,Offline',
+            'dv_amount' => 'required|numeric|min:0.01',
 
-            'dv_amount'     => 'required|numeric|min:0.01',
+            'bank_cheques' => 'required|array|min:1',
+            'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
+            'bank_cheques.*.cheque_number' => 'required|string',
+            'bank_cheques.*.cheque_date' => 'nullable|date',
+            'bank_cheques.*.bank_status' => 'required|in:online,offline',
+            'bank_cheques.*.amount' => 'required|numeric|min:0',
         ]);
 
-        $user = $request->user();
+        DB::beginTransaction();
 
-        [$dd, $mm, $yyyy] = explode('/', $request->date);
-        $formattedDate = "$yyyy-$mm-$dd";
+        try {
 
-        // Get current fiscal year
-        $fiscalYear = \App\Models\LibFiscalYear::where('year', $yyyy)->first();
+            $user = $request->user();
 
-        $record = BirRemittance::create([
-            'barangay_id'   => $user->barangay_id,
-            'date'          => $formattedDate,
-            'dv_number'     => $request->dv_number,
-            'cheque_number' => $request->cheque_number,
-            'cheque_date'    => $request->cheque_date,
-            'bank_id'       => $request->bank_id,
+            [$dd, $mm, $yyyy] = explode('/', $validated['date']);
+            $formattedDate = "$yyyy-$mm-$dd";
 
-            'bank_status' => $request->bank_status,
+            $firstCheque = $validated['bank_cheques'][0];
 
-            'payee'         => 'Bureau of Internal Revenue',
-            'dv_amount'     => $request->dv_amount,
-            'status'        => 'Unliquidated',
-            'user_id'       => $user->id,
-        ]);
+            // Create parent remittance
+            $record = BirRemittance::create([
+                'barangay_id' => $user->barangay_id,
+                'date' => $formattedDate,
+                'dv_number' => $validated['dv_number'],
 
-        // Mark cheque as used
-        $booklets = LibBooklet::where('bank_id', $request->bank_id)->pluck('id');
-        $cheque = LibCheque::where('cheque_number', $request->cheque_number)
-            ->whereIn('booklet_id', $booklets)
-            ->where('status', 'unused')
-            ->first();
+                // Required by current table
+                'bank_id' => $firstCheque['bank_id'],
+                'cheque_number' => $firstCheque['cheque_number'],
+                'cheque_date' => $firstCheque['cheque_date'] ?? null,
+                'bank_status' => $firstCheque['bank_status'],
 
-        if ($cheque) {
-            $cheque->update(['status' => 'used', 'disbursement_id' => $record->id]);
+                'payee' => 'Bureau of Internal Revenue',
+                'dv_amount' => $validated['dv_amount'],
+                'status' => 'Unliquidated',
+                'user_id' => $user->id,
+            ]);
+
+            // Save ALL bank cheques
+            foreach ($validated['bank_cheques'] as $row) {
+
+                BirBankCheque::create([
+                    'bir_remittance_id' => $record->id,
+                    'bank_id' => $row['bank_id'],
+                    'cheque_number' => $row['cheque_number'],
+                    'cheque_date' => $row['cheque_date'] ?? null,
+                    'bank_status' => $row['bank_status'],
+                    'amount' => $row['amount'],
+                ]);
+
+                // Find the booklet for this bank
+                $booklets = LibBooklet::where(
+                    'bank_id',
+                    $row['bank_id']
+                )->pluck('id');
+
+                // Mark this cheque as used
+                $libCheque = LibCheque::where(
+                    'cheque_number',
+                    $row['cheque_number']
+                )
+                ->whereIn('booklet_id', $booklets)
+                ->where('status', 'unused')
+                ->first();
+
+                if ($libCheque) {
+
+                    $libCheque->update([
+                        'status' => 'used',
+                        'disbursement_id' => $record->id,
+                    ]);
+
+                }
+            }
+
+            // Update booklet/bank statuses
+            (new \App\Http\Controllers\Library\BankLibraryController())
+                ->updateBanksStatus();
+
+            DB::commit();
+
+            AdminAuthController::logUserAction(
+                $user,
+                'Created BIR Remittance',
+                sprintf(
+                    '#%s amount ₱%s (%d cheque(s))',
+                    $record->dv_number,
+                    number_format($record->dv_amount, 2),
+                    count($validated['bank_cheques'])
+                )
+            );
+
+            return response()->json([
+                'status' => true,
+                'message' => 'BIR Remittance created successfully.',
+                'data' => $record->load('bankCheques.bank'),
+            ], 201);
+
+        } catch (\Exception $e) {
+
+            DB::rollBack();
+
+            return response()->json([
+                'status' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+
         }
-
-        // Update bank/booklet statuses
-        (new \App\Http\Controllers\Library\BankLibraryController())->updateBanksStatus();
-
-        AdminAuthController::logUserAction(
-            $user,
-            'Created BIR Remittance',
-            sprintf('#%s amount ₱%s cheque %s', $record->dv_number,
-                number_format($record->dv_amount, 2), $record->cheque_number)
-        );
-
-        return response()->json(['status' => true, 'message' => 'BIR Remittance created', 'data' => $record], 201);
     }
 
     // GET /api/barangay/bir-remittances/{id}
     public function show(Request $request, $id)
     {
         $user = $request->user();
-        $record = BirRemittance::with(['bank', 'barangay'])
+        $record = BirRemittance::with(['bankCheques.bank', 'barangay'])
             ->where('barangay_id', $user->barangay_id)
             ->findOrFail($id);
 
@@ -150,14 +206,31 @@ class BirRemittanceController extends Controller
 
         $record->update(['status' => 'Voided', 'remarks' => $request->remarks]);
 
-        // Void the cheque
-        $booklets = LibBooklet::where('bank_id', $record->bank_id)->pluck('id');
-        $cheque = LibCheque::where('cheque_number', $record->cheque_number)
-            ->whereIn('booklet_id', $booklets)->first();
-        if ($cheque) {
-            $cheque->update(['status' => 'void']);
-            (new \App\Http\Controllers\Library\BankLibraryController())->updateBanksStatus();
+        foreach ($record->bankCheques as $bankCheque) {
+
+            $booklets = LibBooklet::where(
+                'bank_id',
+                $bankCheque->bank_id
+            )->pluck('id');
+
+            $libCheque = LibCheque::where(
+                'cheque_number',
+                $bankCheque->cheque_number
+            )
+            ->whereIn('booklet_id', $booklets)
+            ->first();
+
+            if ($libCheque) {
+
+                $libCheque->update([
+                    'status' => 'void'
+                ]);
+
+            }
         }
+
+        (new \App\Http\Controllers\Library\BankLibraryController())
+            ->updateBanksStatus();
 
         AdminAuthController::logUserAction($user, 'BIR Voided Directly',
             sprintf('#%s voided', $record->dv_number));
@@ -184,13 +257,31 @@ class BirRemittanceController extends Controller
 
         $record->update(['status' => 'Voided']);
 
-        $booklets = LibBooklet::where('bank_id', $record->bank_id)->pluck('id');
-        $cheque = LibCheque::where('cheque_number', $record->cheque_number)
-            ->whereIn('booklet_id', $booklets)->first();
-        if ($cheque) {
-            $cheque->update(['status' => 'void']);
-            (new \App\Http\Controllers\Library\BankLibraryController())->updateBanksStatus();
+        foreach ($record->bankCheques as $bankCheque) {
+
+            $booklets = LibBooklet::where(
+                'bank_id',
+                $bankCheque->bank_id
+            )->pluck('id');
+
+            $libCheque = LibCheque::where(
+                'cheque_number',
+                $bankCheque->cheque_number
+            )
+            ->whereIn('booklet_id', $booklets)
+            ->first();
+
+            if ($libCheque) {
+
+                $libCheque->update([
+                    'status' => 'void'
+                ]);
+
+            }
         }
+
+        (new \App\Http\Controllers\Library\BankLibraryController())
+            ->updateBanksStatus();
 
         AdminAuthController::logUserAction($user, 'BIR Void Approved',
             sprintf('#%s void approved', $record->dv_number));
@@ -237,31 +328,31 @@ class BirRemittanceController extends Controller
     // }
 
     public function pendingTaxTotal(Request $request)
-{
-    try {
-        $user = $request->user();
-        $barangayId = $user?->barangay_id;
+    {
+        try {
+            $user = $request->user();
+            $barangayId = $user?->barangay_id;
 
-        // Sum of BIR remittances that are unliquidated/pending
-        // Adjust the model/table name to match your actual setup
-        $total = \App\Models\BirRemittance::when($barangayId, function ($q) use ($barangayId) {
-                $q->where('barangay_id', $barangayId);
-            })
-            ->where('status', 'Unliquidated')
-            ->sum('dv_amount');
+            // Sum of BIR remittances that are unliquidated/pending
+            // Adjust the model/table name to match your actual setup
+            $total = \App\Models\BirRemittance::when($barangayId, function ($q) use ($barangayId) {
+                    $q->where('barangay_id', $barangayId);
+                })
+                ->where('status', 'Unliquidated')
+                ->sum('dv_amount');
 
-        return response()->json([
-            'status' => true,
-            'pending_total' => (float) $total,
-        ]);
-    } catch (\Exception $e) {
-        \Log::error('pendingTaxTotal error: ' . $e->getMessage());
-        return response()->json([
-            'status' => true,
-            'pending_total' => 0,
-        ]);
+            return response()->json([
+                'status' => true,
+                'pending_total' => (float) $total,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('pendingTaxTotal error: ' . $e->getMessage());
+            return response()->json([
+                'status' => true,
+                'pending_total' => 0,
+            ]);
+        }
     }
-}
 
     private function format(BirRemittance $d): array
     {
@@ -269,11 +360,17 @@ class BirRemittanceController extends Controller
             'id'                => $d->id,
             'date'              => $d->date,
             'dv_number'         => $d->dv_number,
-            'cheque_number'     => $d->cheque_number,
-            'cheque_date'       => $d->cheque_date,
-            'bank_id'           => $d->bank_id,
-            'bank_name'         => $d->bank?->bank_name,
-            'bank_status'       => $d->bank_status,
+            'bank_cheques'=>$d->bankCheques->map(function($c){
+                return [
+                    'id'=>$c->id,
+                    'bank_id'=>$c->bank_id,
+                    'bank_name'=>optional($c->bank)->bank_name,
+                    'cheque_number'=>$c->cheque_number,
+                    'cheque_date'=>$c->cheque_date,
+                    'bank_status'=>$c->bank_status,
+                    'amount'=>$c->amount
+                ];
+            }),
             'payee'             => $d->payee,
             'dv_amount'         => $d->dv_amount,
             'status'            => $d->status,
