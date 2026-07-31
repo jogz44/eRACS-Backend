@@ -9,6 +9,7 @@ use App\Models\LibCheque;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
+use App\Models\BarangaySetup;
 
 class BirRemittanceController extends Controller
 {
@@ -61,7 +62,7 @@ class BirRemittanceController extends Controller
             'dv_number' => [
                 'required',
                 'string',
-                \Illuminate\Validation\Rule::unique('disbursements', 'dv_number'),
+                \Illuminate\Validation\Rule::unique('bir_remittances', 'dv_number'),
             ],
 
             'dv_amount' => 'required|numeric|min:0.01',
@@ -70,7 +71,7 @@ class BirRemittanceController extends Controller
             'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
             'bank_cheques.*.cheque_number' => 'required|string',
             'bank_cheques.*.cheque_date' => 'nullable|date',
-            'bank_cheques.*.bank_status' => 'required|in:online,offline',
+
             'bank_cheques.*.amount' => 'required|numeric|min:0',
         ]);
 
@@ -80,10 +81,32 @@ class BirRemittanceController extends Controller
 
             $user = $request->user();
 
+            $setup = BarangaySetup::with('bankAccounts')
+                ->where('barangay_id', $user->barangay_id)
+                ->first();
+
+            if (!$setup) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Barangay setup not found.'
+                ], 422);
+            }
+
             [$dd, $mm, $yyyy] = explode('/', $validated['date']);
             $formattedDate = "$yyyy-$mm-$dd";
 
             $firstCheque = $validated['bank_cheques'][0];
+
+            $defaultBankAccount = $setup->bankAccounts
+                ->where('bank_id', $firstCheque['bank_id'])
+                ->first();
+
+            if (!$defaultBankAccount) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected bank has not been configured in Barangay Setup.'
+                ], 422);
+            }
 
             // Create parent remittance
             $record = BirRemittance::create([
@@ -95,7 +118,7 @@ class BirRemittanceController extends Controller
                 'bank_id' => $firstCheque['bank_id'],
                 'cheque_number' => $firstCheque['cheque_number'],
                 'cheque_date' => $firstCheque['cheque_date'] ?? null,
-                'bank_status' => $firstCheque['bank_status'],
+                'bank_status' => $defaultBankAccount->bank_status,
 
                 'payee' => 'Bureau of Internal Revenue',
                 'dv_amount' => $validated['dv_amount'],
@@ -106,13 +129,24 @@ class BirRemittanceController extends Controller
             // Save ALL bank cheques
             foreach ($validated['bank_cheques'] as $row) {
 
+                $bankAccount = $setup->bankAccounts
+                    ->where('bank_id', $row['bank_id'])
+                    ->first();
+
+                if (!$bankAccount) {
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Selected bank has not been configured in Barangay Setup.'
+                    ], 422);
+                }
+
                 BirBankCheque::create([
                     'bir_remittance_id' => $record->id,
-                    'bank_id' => $row['bank_id'],
-                    'cheque_number' => $row['cheque_number'],
-                    'cheque_date' => $row['cheque_date'] ?? null,
-                    'bank_status' => $row['bank_status'],
-                    'amount' => $row['amount'],
+                    'bank_id'           => $row['bank_id'],
+                    'cheque_number'     => $row['cheque_number'],
+                    'cheque_date'       => $row['cheque_date'] ?? null,
+                    'bank_status'       => $bankAccount->bank_status,
+                    'amount'            => $row['amount'],
                 ]);
 
                 // Find the booklet for this bank
@@ -209,105 +243,170 @@ class BirRemittanceController extends Controller
     // POST /api/barangay/bir-remittances/{id}/void-direct
     public function voidDirect(Request $request, $id)
     {
-        $request->validate(['remarks' => 'required|string|max:500']);
+        $request->validate([
+            'remarks' => 'required|string|max:500'
+        ]);
+
         $user = $request->user();
 
         $position = strtolower(optional($user->position)->name ?? '');
         $canVoid = str_contains($position, 'captain') || str_contains($position, 'chairperson');
 
         if (!$canVoid) {
-            return response()->json(['status' => false, 'message' => 'Only Captain/Chairperson can void directly'], 403);
+            return response()->json([
+                'status' => false,
+                'message' => 'Only Captain/Chairperson can void directly'
+            ], 403);
         }
 
-        $record = BirRemittance::where('barangay_id', $user->barangay_id)->findOrFail($id);
+        $record = BirRemittance::with('bankCheques')
+            ->where('barangay_id', $user->barangay_id)
+            ->findOrFail($id);
 
         if (!in_array($record->status, ['Unliquidated', 'Partial'])) {
-            return response()->json(['status' => false, 'message' => 'Cannot void this record'], 400);
+            return response()->json([
+                'status' => false,
+                'message' => 'Cannot void this record'
+            ], 400);
         }
 
-        $record->update(['status' => 'Voided', 'remarks' => $request->remarks]);
+        DB::beginTransaction();
 
-        foreach ($record->bankCheques as $bankCheque) {
+        try {
 
-            $booklets = LibBooklet::where(
-                'bank_id',
-                $bankCheque->bank_id
-            )->pluck('id');
+            $record->update([
+                'status' => 'Voided',
+                'remarks' => $request->remarks
+            ]);
 
-            $libCheque = LibCheque::where(
-                'cheque_number',
-                $bankCheque->cheque_number
-            )
-            ->whereIn('booklet_id', $booklets)
-            ->first();
+            foreach ($record->bankCheques as $bankCheque) {
 
-            if ($libCheque) {
+                $booklets = LibBooklet::where('bank_id', $bankCheque->bank_id)
+                    ->pluck('id');
 
-                $libCheque->update([
-                    'status' => 'void'
-                ]);
+                $libCheque = LibCheque::where('cheque_number', $bankCheque->cheque_number)
+                    ->whereIn('booklet_id', $booklets)
+                    ->where('status', 'used')
+                    ->first();
 
+                if ($libCheque) {
+                    $libCheque->update([
+                        'status' => 'void',
+                        'disbursement_id' => null,
+                    ]);
+                }
             }
+
+            (new \App\Http\Controllers\Library\BankLibraryController())
+                ->updateBanksStatus();
+
+            AdminAuthController::logUserAction(
+                $user,
+                'BIR Voided Directly',
+                sprintf('#%s voided', $record->dv_number)
+            );
+
+            DB::commit();
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Voided successfully'
+            ]);
+
+        } catch (\Exception $e) {
+
+            DB::rollBack();
+
+            \Log::error('Error voiding BIR Remittance: '.$e->getMessage());
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to void BIR Remittance',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        (new \App\Http\Controllers\Library\BankLibraryController())
-            ->updateBanksStatus();
-
-        AdminAuthController::logUserAction($user, 'BIR Voided Directly',
-            sprintf('#%s voided', $record->dv_number));
-
-        return response()->json(['status' => true, 'message' => 'Voided successfully']);
     }
 
     // POST /api/barangay/bir-remittances/{id}/void-approve
     public function approveVoid(Request $request, $id)
     {
         $user = $request->user();
+
         $position = strtolower(optional($user->position)->name ?? '');
         $canApprove = str_contains($position, 'captain') || str_contains($position, 'chairperson');
 
         if (!$canApprove) {
-            return response()->json(['status' => false, 'message' => 'Only Captain/Chairperson can approve'], 403);
+            return response()->json([
+                'status' => false,
+                'message' => 'Only Captain/Chairperson can approve'
+            ], 403);
         }
 
-        $record = BirRemittance::where('barangay_id', $user->barangay_id)->findOrFail($id);
+        $record = BirRemittance::with('bankCheques')
+            ->where('barangay_id', $user->barangay_id)
+            ->findOrFail($id);
 
         if ($record->status !== 'Void Requested') {
-            return response()->json(['status' => false, 'message' => 'Status must be Void Requested'], 400);
+            return response()->json([
+                'status' => false,
+                'message' => 'Status must be Void Requested'
+            ], 400);
         }
 
-        $record->update(['status' => 'Voided']);
+        DB::beginTransaction();
 
-        foreach ($record->bankCheques as $bankCheque) {
+        try {
 
-            $booklets = LibBooklet::where(
-                'bank_id',
-                $bankCheque->bank_id
-            )->pluck('id');
+            $record->update([
+                'status' => 'Voided'
+            ]);
 
-            $libCheque = LibCheque::where(
-                'cheque_number',
-                $bankCheque->cheque_number
-            )
-            ->whereIn('booklet_id', $booklets)
-            ->first();
+            foreach ($record->bankCheques as $bankCheque) {
 
-            if ($libCheque) {
+                $booklets = LibBooklet::where('bank_id', $bankCheque->bank_id)
+                    ->pluck('id');
 
-                $libCheque->update([
-                    'status' => 'void'
-                ]);
+                $libCheque = LibCheque::where('cheque_number', $bankCheque->cheque_number)
+                    ->whereIn('booklet_id', $booklets)
+                    ->where('status', 'used')
+                    ->first();
 
+                if ($libCheque) {
+                    $libCheque->update([
+                        'status' => 'void',
+                        'disbursement_id' => null,
+                    ]);
+                }
             }
+
+            (new \App\Http\Controllers\Library\BankLibraryController())
+                ->updateBanksStatus();
+
+            AdminAuthController::logUserAction(
+                $user,
+                'BIR Void Approved',
+                sprintf('#%s void approved', $record->dv_number)
+            );
+
+            DB::commit();
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Void approved'
+            ]);
+
+        } catch (\Exception $e) {
+
+            DB::rollBack();
+
+            \Log::error('Error approving BIR Remittance void: '.$e->getMessage());
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to approve void request',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        (new \App\Http\Controllers\Library\BankLibraryController())
-            ->updateBanksStatus();
-
-        AdminAuthController::logUserAction($user, 'BIR Void Approved',
-            sprintf('#%s void approved', $record->dv_number));
-
-        return response()->json(['status' => true, 'message' => 'Void approved']);
     }
 
     // POST /api/barangay/bir-remittances/{id}/void-reject

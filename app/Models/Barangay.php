@@ -21,7 +21,7 @@ class Barangay extends Model
     {
         return $this->hasMany(Budget::class,'barangay_id');
     }
-    
+
     public function fiscalYear()
     {
         return $this->hasMany(LibFiscalYear::class,'barangay_id');
@@ -41,7 +41,7 @@ class Barangay extends Model
     {
         return $this->hasMany(TranAppropriation::class);
     }
-    
+
     public function disbursement()
     {
         return $this->hasMany(Disbursement::class);
@@ -51,5 +51,10 @@ class Barangay extends Model
     public static function dropdown()
     {
         return self::orderBy('name')->pluck('name', 'id');
+    }
+
+    public function setup()
+    {
+        return $this->hasOne(BarangaySetup::class);
     }
 }

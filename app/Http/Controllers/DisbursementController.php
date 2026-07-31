@@ -67,8 +67,8 @@ class DisbursementController extends Controller
 
         $query = TranExpenseDetail::with([
             'appropriation.expenseClass.fiscalYear',
-            'disbursement.barangay',
-            'disbursement.bankCheques.bank',
+            'disbursement.barangay.setup',
+            'disbursement.bankCheques.bank.barangayBankAccounts',
         ]);
 
         // If user is authenticated and has barangay_id, filter by it
@@ -111,18 +111,23 @@ class DisbursementController extends Controller
                 'dv_number' => $d->dv_number,
                 'payee' => $d->payee,
 
-                'bank_status' => $d->bank_status,
+                'bank_cheques' => $d->bankCheques->map(function ($cheque) use ($d) {
 
-                'bank_cheques' => $d->bankCheques->map(function ($cheque) {
                     return [
                         'id' => $cheque->id,
                         'bank_id' => $cheque->bank_id,
                         'bank_name' => optional($cheque->bank)->bank_name,
-                        'bank_status' => $cheque->bank_status,
+                        'bank_status' => optional(
+                            optional($cheque->bank)
+                                ->barangayBankAccounts
+                                ->where('barangay_setup_id', optional($d->barangay->setup)->id)
+                                ->first()
+                        )->bank_status,
                         'cheque_number' => $cheque->cheque_number,
                         'cheque_date' => $cheque->cheque_date,
                         'amount' => $cheque->amount,
                     ];
+
                 })->values(),
 
                 'particular' => $detail->particulars,
@@ -150,8 +155,8 @@ class DisbursementController extends Controller
     {
         $query = TranExpenseDetail::with([
             'appropriation.expenseClass.fiscalYear',
-            'disbursement.barangay',
-            'disbursement.bankCheques.bank',
+            'disbursement.barangay.setup',
+            'disbursement.bankCheques.bank.barangayBankAccounts',
         ]);
 
         if ($request->filled('barangay_id')) {
@@ -193,20 +198,21 @@ class DisbursementController extends Controller
                 'payee' => $d->payee,
                 'payee2' => $d->payee2,
 
-                'bank_status' => $d->bank_status,
-
-                'bank_cheques' => $d->bankCheques->map(function ($cheque) {
+                'bank_cheques' => $d->bankCheques->map(function ($cheque) use ($d) {
 
                     return [
-
                         'id' => $cheque->id,
                         'bank_id' => $cheque->bank_id,
                         'bank_name' => optional($cheque->bank)->bank_name,
+                        'bank_status' => optional(
+                            optional($cheque->bank)
+                                ->barangayBankAccounts
+                                ->where('barangay_setup_id', optional($d->barangay->setup)->id)
+                                ->first()
+                        )->bank_status,
                         'cheque_number' => $cheque->cheque_number,
                         'cheque_date' => $cheque->cheque_date,
-                        'bank_status' => $cheque->bank_status,
                         'amount' => $cheque->amount,
-
                     ];
 
                 })->values(),
@@ -251,8 +257,6 @@ class DisbursementController extends Controller
             'payee' => 'required|string',
             'payee2' => 'required|string',
 
-            'bank_status' => 'required|in:online,offline',
-
             'dv_amount' => 'required|numeric|min:0',
             'expenses' => 'array',
             'expenses.*.accountId' => 'required|integer',
@@ -270,6 +274,18 @@ class DisbursementController extends Controller
 
         try {
             $user = $request->user();
+
+            $setup = \App\Models\BarangaySetup::with('bankAccounts')
+                ->where('barangay_id', $user->barangay_id)
+                ->first();
+
+            if (!$setup) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Barangay Setup has not been configured.'
+                ], 422);
+            }
+
             $adminUser = $request->user('admin');
 
             // Determine barangay_id based on user type (only honor request for admin)
@@ -290,13 +306,7 @@ class DisbursementController extends Controller
                 'payee2' => $request->payee2,
                 'dv_amount' => $request->dv_amount,
 
-                'bank_status' => $request->bank_status,
-
                 'status' => 'Unliquidated',
-            ]);
-
-            \Log::info('Bank Status Received', [
-                'bank_status' => $request->bank_status
             ]);
 
             // ===============================================
@@ -360,14 +370,25 @@ class DisbursementController extends Controller
             // ===============================================
             foreach ($bankChequeTotals as $cheque) {
 
+                $bankAccount = $setup->bankAccounts
+                    ->where('bank_id', $cheque['bank_id'])
+                    ->first();
+
+                if (!$bankAccount) {
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Selected bank has not been configured in Barangay Setup.'
+                    ], 422);
+                }
+
                 \Log::info('Saving cheque', $cheque);
 
                 BankCheque::create([
                     'disbursement_id' => $disbursement->id,
-                    'bank_id'         => $cheque['bank_id'],
-                    'cheque_number'   => $cheque['cheque_number'],
-                    'cheque_date'     => $cheque['cheque_date'],
-                    'amount'          => $cheque['amount'],
+                    'bank_id' => $cheque['bank_id'],
+                    'cheque_number' => $cheque['cheque_number'],
+                    'cheque_date' => $cheque['cheque_date'],
+                    'amount' => $cheque['amount'],
                 ]);
 
                 // ===============================================
@@ -479,44 +500,41 @@ class DisbursementController extends Controller
                 \Log::warning('Failed to write disbursement logs: ' . $logEx->getMessage());
             }
 
-            //this block pertaining the checking of online disbursement
-            if ($request->bank_status === 'online') {
+            // ===================================================
+            // Generate export only if at least one selected bank
+            // is configured as ONLINE in Barangay Setup
+            // ===================================================
 
-                \Log::info('ONLINE BLOCK REACHED');
+            $hasOnlineBank = collect($bankChequeTotals)->contains(function ($cheque) use ($setup) {
 
-                $setup = BarangaySetup::where(
-                    'barangay_id',
-                    $barangayId
-                )->first();
+                $bankAccount = $setup->bankAccounts
+                    ->where('bank_id', $cheque['bank_id'])
+                    ->first();
 
-                \Log::info('Barangay Setup', [
-                    'setup' => $setup
+                return $bankAccount && $bankAccount->bank_status === 'online';
+            });
+
+            if ($hasOnlineBank) {
+
+                \Log::info('ONLINE BANK DETECTED');
+
+                $filename = sprintf(
+                    'BANK_EXPORT_%d_%s.txt',
+                    $disbursement->id,
+                    now()->format('YmdHis')
+                );
+
+                BankExportFile::create([
+                    'disbursement_id'   => $disbursement->id,
+                    'barangay_setup_id' => $setup->id,
+                    'generated_by'      => $user->id,
+                    'filename'          => $filename,
+                    'filepath'          => '',
+                    'is_exported'       => false,
+                    'exported_at'       => null,
                 ]);
 
-                if ($setup) {
-
-                    \Log::info('Creating BankExportFile');
-
-                    $filename = sprintf(
-                        'BANK_EXPORT_%d_%s.txt',
-                        $disbursement->id,
-                        now()->format('YmdHis')
-                    );
-
-                    BankExportFile::create([
-                        'disbursement_id'   => $disbursement->id,
-                        'barangay_setup_id' => $setup->id,
-                        'generated_by'      => $user->id,
-
-                        'filename'          => $filename,
-                        'filepath'          => '',
-
-                        'is_exported'       => false,
-                        'exported_at'       => null,
-                    ]);
-
-                    \Log::info('BankExportFile Created');
-                }
+                \Log::info('BankExportFile Created');
             }
 
             return response()->json([
@@ -1139,7 +1157,7 @@ class DisbursementController extends Controller
                 'dv_number' => $disbursement->dv_number,
                 'ref_dv_number' => $disbursement->ref_dv_number ?? null,
 
-                'bank_cheques' => $disbursement->bankCheques->map(function ($cheque) {
+                'bank_cheques' => $disbursement->bankCheques->map(function ($cheque) use ($disbursement) {
                     return [
                         'id' => $cheque->id,
                         'bank_id' => $cheque->bank_id,
@@ -1151,7 +1169,6 @@ class DisbursementController extends Controller
                 }),
                 'payee' => $disbursement->payee,
                 'payee2' => $disbursement->payee2,
-                'bank_status' => $disbursement->bank_status,
                 'dv_amount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
@@ -1256,6 +1273,17 @@ class DisbursementController extends Controller
         try {
             $user = $request->user();
 
+            $setup = \App\Models\BarangaySetup::with('bankAccounts')
+                ->where('barangay_id', $user->barangay_id)
+                ->first();
+
+            if (!$setup) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Barangay Setup has not been configured.'
+                ], 422);
+            }
+
             // Find the disbursement
             $disbursement = Disbursement::where('id', $id)
                 ->where('barangay_id', $user->barangay_id)
@@ -1284,31 +1312,55 @@ class DisbursementController extends Controller
                 'dv_amount' => $request->dv_amount,
             ]);
             if ($request->cancel) {
-                $disbursement->update([
-                    'cheque_number' => $request->cheque_number,
-                    'cheque_date' => $request->cheque_date,
-                    'bank_id' => $request->bank_id,
-                    'payee' => $request->payee,
-                    'payee2' => $request->payee2,
-                ]);
-                $cheque = LibCheque::where('disbursement_id', $id)
+
+                $bankAccount = $setup->bankAccounts
+                    ->where('bank_id', $request->bank_id)
                     ->first();
 
-                if ($cheque) {
-                    $cheque->status = 'cancelled';
-                    $cheque->save();
+                if (!$bankAccount) {
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Selected bank has not been configured in Barangay Setup.'
+                    ], 422);
                 }
 
-                $newbooklets = LibBooklet::where('bank_id', $request->bank_id)->get();
+                $disbursement->update([
+                    'cheque_number' => $request->cheque_number,
+                    'cheque_date'   => $request->cheque_date,
+                    'bank_id'       => $request->bank_id,
+                    'bank_status'   => $bankAccount->bank_status,
+                    'payee'         => $request->payee,
+                    'payee2'        => $request->payee2,
+                ]);
+
+                $cheque = LibCheque::where('disbursement_id', $id)->first();
+
+                if ($cheque) {
+                    $cheque->update([
+                        'status' => 'cancelled'
+                    ]);
+                }
+
+                $newbooklets = LibBooklet::where('bank_id', $request->bank_id)
+                    ->pluck('id');
+
                 $newcheque = LibCheque::where('cheque_number', $request->cheque_number)
-                    ->whereIn('booklet_id', $newbooklets->pluck('id'))
+                    ->whereIn('booklet_id', $newbooklets)
                     ->first();
 
                 if ($newcheque) {
-                    $newcheque->status = 'used';
-                    $newcheque->disbursement_id = $id;
-                    $newcheque->save();
+                    $newcheque->update([
+                        'status' => 'used',
+                        'disbursement_id' => $id,
+                    ]);
                 }
+
+                BankCheque::where('disbursement_id', $id)->update([
+                    'bank_id'       => $request->bank_id,
+                    'cheque_number' => $request->cheque_number,
+                    'cheque_date'   => $request->cheque_date,
+                    'bank_status'   => $bankAccount->bank_status,
+                ]);
             }
 
             // Update bank and booklet statuses after voiding cheque
@@ -2157,14 +2209,23 @@ class DisbursementController extends Controller
                     'payee2' => optional($detail->disbursement)->payee2,
                     'bank_cheques' => optional($detail->disbursement)
                         ->bankCheques
-                        ->map(function ($cheque) {
+                        ->map(function ($cheque) use ($detail) {
+
+                            $bankAccount = optional(
+                                optional($detail->disbursement->barangay->setup)
+                                    ->bankAccounts
+                            )->where('bank_id', $cheque->bank_id)->first();
+
                             return [
                                 'id' => $cheque->id,
                                 'bank_id' => $cheque->bank_id,
                                 'bank_name' => optional($cheque->bank)->bank_name,
                                 'cheque_number' => $cheque->cheque_number,
                                 'cheque_date' => $cheque->cheque_date,
-                                'bank_status' => $cheque->bank_status,
+
+                                // NOW COMES FROM BARANGAY SETUP
+                                'bank_status' => optional($bankAccount)->bank_status,
+
                                 'amount' => $cheque->amount,
                             ];
                         })->values(),

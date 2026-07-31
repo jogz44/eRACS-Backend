@@ -10,6 +10,7 @@ class BarangayBankAccount extends Model
         'barangay_setup_id',
         'bank_id',
         'account_number',
+        'bank_status',
         'is_default',
     ];
 

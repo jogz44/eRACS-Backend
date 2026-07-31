@@ -16,10 +16,6 @@ class BarangaySetup extends Model
 
         'barangay_position_id',
 
-        //transfered to brgy bank accounts table for multiple accnts
-        // 'bank_id',
-        // 'account_number',
-
         'noted_by',
         'noted_by_position_id',
 

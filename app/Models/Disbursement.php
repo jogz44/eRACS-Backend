@@ -23,7 +23,7 @@ class Disbursement extends Model
         'payee',
         'payee2',
 
-        'bank_status',
+        // 'bank_status',
 
         'dv_amount',
         'status',

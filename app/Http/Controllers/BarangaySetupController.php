@@ -48,7 +48,8 @@ class BarangaySetupController extends Controller
             'bank_accounts.*.id'             => 'nullable|integer',
             'bank_accounts.*.bank_id'        => 'required|exists:lib_banks,id',
             'bank_accounts.*.account_number' => 'required|string|max:100',
-            'bank_accounts.*.is_default'     => 'nullable|boolean',
+            'bank_accounts.*.bank_status' => 'required|in:online,offline',
+            'bank_accounts.*.is_default' => 'nullable|boolean',
 
             'noted_by'                       => 'required|string|max:255',
             'noted_by_position_id'           => 'required|exists:barangay_positions,id',
@@ -104,11 +105,11 @@ class BarangaySetupController extends Controller
             foreach ($request->bank_accounts as $bank) {
 
                 $setup->bankAccounts()->create([
-                    'bank_id' => $bank['bank_id'],
+                    'bank_id'        => $bank['bank_id'],
                     'account_number' => $bank['account_number'],
-                    'is_default' => $bank['is_default'] ?? false,
+                    'bank_status'    => $bank['bank_status'],
+                    'is_default'     => $bank['is_default'] ?? false,
                 ]);
-
             }
 
         });
@@ -165,7 +166,8 @@ class BarangaySetupController extends Controller
             'bank_accounts.*.id'             => 'nullable|exists:barangay_bank_accounts,id',
             'bank_accounts.*.bank_id'        => 'required|exists:lib_banks,id',
             'bank_accounts.*.account_number' => 'required|string|max:100',
-            'bank_accounts.*.is_default'     => 'nullable|boolean',
+            'bank_accounts.*.bank_status' => 'required|in:online,offline',
+            'bank_accounts.*.is_default' => 'nullable|boolean',
 
             'noted_by'                       => 'required|string|max:255',
             'noted_by_position_id'           => 'required|exists:barangay_positions,id',
@@ -243,6 +245,7 @@ class BarangaySetupController extends Controller
                     $bankAccount->update([
                         'bank_id'        => $account['bank_id'],
                         'account_number' => $account['account_number'],
+                        'bank_status'    => $account['bank_status'],
                         'is_default'     => !empty($account['is_default']),
                     ]);
 
@@ -254,6 +257,7 @@ class BarangaySetupController extends Controller
                 $newAccount = $setup->bankAccounts()->create([
                     'bank_id'        => $account['bank_id'],
                     'account_number' => $account['account_number'],
+                    'bank_status'    => $account['bank_status'],
                     'is_default'     => !empty($account['is_default']),
                 ]);
 
@@ -331,6 +335,7 @@ class BarangaySetupController extends Controller
                     'bank_id' => $account->bank_id,
                     'bank' => optional($account->bank)->bank_name,
                     'account_number' => $account->account_number,
+                    'bank_status' => $account->bank_status,
                     'is_default' => (bool) $account->is_default,
                 ];
 

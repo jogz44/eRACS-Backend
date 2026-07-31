@@ -57,4 +57,9 @@ class LibBank extends Model
         return $this->belongsTo(Barangay::class);
     }
 
+    public function barangayBankAccounts()
+    {
+        return $this->hasMany(\App\Models\BarangayBankAccount::class, 'bank_id');
+    }
+
 }
