@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
+use App\Models\Admin;
 
 class BankLibraryController extends Controller
 {
@@ -19,16 +20,48 @@ class BankLibraryController extends Controller
      */
     public function getBanks(Request $request)
     {
-        $this->updateBanksStatus();
-        $banks = LibBank::where('barangay_id', Auth::user()->barangay_id)
-            ->withCount('booklets') // Count booklets instead of cheques
+        // Determine authenticated user
+        $admin = Auth::guard('admin')->user();
+        $barangayUser = Auth::guard('barangay')->user();
+
+        // Debug (safe logging)
+        \Log::info('getBanks called', [
+            'is_admin' => $admin ? true : false,
+            'admin_id' => $admin?->id,
+            'barangay_user_id' => $barangayUser?->id,
+            'request_barangay_id' => $request->barangay_id,
+        ]);
+
+        // Determine barangay ID
+        if ($admin) {
+            if (!$request->filled('barangay_id')) {
+                return response()->json([
+                    'message' => 'barangay_id is required for admin requests.'
+                ], 400);
+            }
+
+            $barangayId = $request->barangay_id;
+        } elseif ($barangayUser) {
+            $barangayId = $barangayUser->barangay_id;
+        } else {
+            return response()->json([
+                'message' => 'Unauthenticated.'
+            ], 401);
+        }
+
+        // Update bank statuses
+        $this->updateBanksStatus($barangayId);
+
+        // Fetch banks
+        $banks = LibBank::where('barangay_id', $barangayId)
+            ->withCount('booklets')
             ->get()
             ->map(function ($bank) {
                 return [
                     'id' => $bank->id,
                     'name' => $bank->bank_name,
                     'status' => ucfirst($bank->status),
-                    'booklets_count' => $bank->booklets_count, // Changed from cheques_count
+                    'booklets_count' => $bank->booklets_count,
                 ];
             });
 
@@ -37,60 +70,68 @@ class BankLibraryController extends Controller
         /**
          * Create a new bank
          */
-    public function createBank(Request $request)
-    {
-        $validated = $request->validate([
-            'name' => 'required|string|min:3|max:255',
-        ]);
+        public function createBank(Request $request)
+        {
+            $validated = $request->validate([
+                'name' => 'required|string|min:3|max:255',
+            ]);
 
-        $bank = LibBank::create([
-            'bank_name' => $validated['name'],
-            'status' => 'unavailable',
-            'barangay_id' => Auth::user()->barangay_id, // Add this line
-        ]);
+            $bank = LibBank::create([
+                'bank_name' => $validated['name'],
+                'status' => 'unavailable',
+                'barangay_id' => Auth::user()->barangay_id, // Add this line
+            ]);
 
 
-        AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Creation','Bank '.$bank->bank_name.' has been created');
+            AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Creation','Bank '.$bank->bank_name.' has been created');
 
-        $this->updateBanksStatus();
-        return response()->json([
-            'id' => $bank->id,
-            'name' => $bank->bank_name,
-            'status' => ucfirst($bank->status),
-            'cheques_count' => 0,
-        ], 201);
-    }
-        public function updateBanksStatus(){
-            $banks = LibBank::where('barangay_id', Auth::user()->barangay_id)->get();
+            $this->updateBanksStatus($barangayId);
+            return response()->json([
+                'id' => $bank->id,
+                'name' => $bank->bank_name,
+                'status' => ucfirst($bank->status),
+                'cheques_count' => 0,
+            ], 201);
+        }
+        public function updateBanksStatus($barangayId)
+        {
+            $banks = LibBank::where('barangay_id', $barangayId)->get();
 
             foreach ($banks as $bank) {
+
                 $totalBooklets = $bank->booklets()->count();
 
                 if ($totalBooklets === 0) {
-                    // No booklets at all
                     $bank->status = 'unavailable';
                 } else {
-                    $booklets=LibBooklet::where('bank_id',$bank->id)->get();
 
-                    foreach($booklets as $booklet){
+                    $booklets = LibBooklet::where('bank_id', $bank->id)->get();
+
+                    foreach ($booklets as $booklet) {
+
                         $totalCheques = $booklet->cheques()->count();
-                        $usedCheques = $booklet->cheques()->where('status', '!=', 'unused')->count();
+                        $usedCheques = $booklet->cheques()
+                            ->where('status', '!=', 'unused')
+                            ->count();
+
                         if ($usedCheques == 0) {
                             $booklet->status = 'unused';
-                        } elseif ($usedCheques==$totalCheques) {
+                        } elseif ($usedCheques == $totalCheques) {
                             $booklet->status = 'consumed';
-                        }
-                        else {
+                        } else {
                             $booklet->status = 'not all consumed';
                         }
+
                         $booklet->save();
                     }
 
-                    // Check if any booklet is NOT consumed
-                    $hasAvailable = $bank->booklets()->where('status', '!=', 'consumed')->exists();
+                    $hasAvailable = $bank->booklets()
+                        ->where('status', '!=', 'consumed')
+                        ->exists();
 
-                    $bank->status = $hasAvailable ? 'available' : 'consumed';
-
+                    $bank->status = $hasAvailable
+                        ? 'available'
+                        : 'consumed';
                 }
 
                 $bank->save();
@@ -119,7 +160,7 @@ class BankLibraryController extends Controller
 
             AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Update','Bank rename from "'.$oldName.'" to "'.$bank->bank_name.'".');
 
-        $this->updateBanksStatus();
+        $this->updateBanksStatus($barangayId);
 
             return response()->json([
                 'id' => $bank->id,
@@ -153,7 +194,7 @@ class BankLibraryController extends Controller
 
             AdminAuthController::logUserAction(Auth::guard('barangay')->user(), 'Bank Deletion', 'Bank ' . $bankName . ' has been deleted.');
 
-            $this->updateBanksStatus();
+            $this->updateBanksStatus($barangayId);
                 return response()->json(['message' => 'Bank deleted successfully']);
         }
 
@@ -359,7 +400,7 @@ class BankLibraryController extends Controller
             AdminAuthController::logUserAction(Auth::guard('barangay')->user(),
             'Booklet Creation', 'Booklet ' . $booklet->booklet_numb .
             ' has been created with ' . $quantity . ' cheques in Bank '. $bank->bank_name);
-            $this->updateBanksStatus();
+            $this->updateBanksStatus($barangayId);
 
             return response()->json([
                 'id' => $booklet->id,

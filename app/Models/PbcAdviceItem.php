@@ -14,7 +14,11 @@ class PbcAdviceItem extends Model
 
         'disbursement_id',
 
+        'cont_disbursement_id',
+
         'bank_cheque_id',
+
+        'cont_bank_cheque_id',
 
     ];
 
@@ -26,5 +30,21 @@ class PbcAdviceItem extends Model
     public function bankCheque()
     {
         return $this->belongsTo(BankCheque::class, 'bank_cheque_id');
+    }
+
+    public function contDisbursement()
+    {
+        return $this->belongsTo(
+            ContDisbursement::class,
+            'cont_disbursement_id'
+        );
+    }
+
+    public function contBankCheque()
+    {
+        return $this->belongsTo(
+            ContBankCheque::class,
+            'cont_bank_cheque_id'
+        );
     }
 }

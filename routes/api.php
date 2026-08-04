@@ -28,6 +28,7 @@ use App\Http\Controllers\ChequeController;
 use App\Http\Controllers\BarangaySetupController;
 use App\Http\Controllers\BankExportController;
 use App\Http\Controllers\PbcAdviceController;
+use App\Http\Controllers\ContPbcAdviceController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -87,12 +88,19 @@ Route::prefix('barangay')->group(function () {
         Route::get('/setup/{id}', [BarangaySetupController::class, 'show']);
         Route::put('/setup/{id}', [BarangaySetupController::class, 'update']);
 
-        //Generate PBC Reports
+        //Generate PBC Reports for Regular Disbursement
         Route::get('/pbc-advices', [PbcAdviceController::class, 'index']);
         Route::post('/pbc-advices', [PbcAdviceController::class, 'store']);
         Route::get('/pbc-advices/{id}', [PbcAdviceController::class, 'show']);
         Route::delete('/pbc-advices/{id}', [PbcAdviceController::class, 'destroy']);
 
+        //Generate PBC Reports for Continuing Disbursement
+        Route::prefix('cont-pbc-advices')->group(function () {
+            Route::get('/', [ContPbcAdviceController::class, 'index']);
+            Route::post('/', [ContPbcAdviceController::class, 'store']);
+            Route::get('/{id}', [ContPbcAdviceController::class, 'show']);
+            Route::delete('/{id}', [ContPbcAdviceController::class, 'destroy']);
+        });
 
         //Accounts Library
 
@@ -409,6 +417,14 @@ Route::prefix('admin')->group(function () {
         Route::post('/pbc-advices', [PbcAdviceController::class, 'store']);
         Route::get('/pbc-advices/{id}', [PbcAdviceController::class, 'show']);
         Route::delete('/pbc-advices/{id}', [PbcAdviceController::class, 'destroy']);
+
+        //Admin Generate PBC Reports for Continuing Disbursement
+        Route::prefix('cont-pbc-advices')->group(function () {
+            Route::get('/', [ContPbcAdviceController::class, 'index']);
+            Route::post('/', [ContPbcAdviceController::class, 'store']);
+            Route::get('/{id}', [ContPbcAdviceController::class, 'show']);
+            Route::delete('/{id}', [ContPbcAdviceController::class, 'destroy']);
+        });
 
         // Admin banks endpoint (list all banks for selection in admin UI)
         Route::get('/banks', [\App\Http\Controllers\Library\BankLibraryController::class, 'getBanks']);

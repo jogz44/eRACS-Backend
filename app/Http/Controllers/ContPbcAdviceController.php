@@ -4,24 +4,20 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-
+use Illuminate\Support\Facades\Auth;
 use App\Models\PbcAdvice;
 use App\Models\PbcAdviceItem;
-use App\Models\Disbursement;
-use App\Models\BankCheque;
+use App\Models\ContDisbursement;
+use App\Models\ContBankCheque;
+use App\Models\Admin;
 
-class PbcAdviceController extends Controller
+
+class ContPbcAdviceController extends Controller
 {
     //GET api/barangay/pbc-advices
     public function index(Request $request)
     {
-        $user = $request->user();
-
-        $barangayId = $request->barangay_id;
-
-        if (!$barangayId) {
-            $barangayId = $user->barangay_id;
-        }
+        $barangayId = $this->resolveBarangay($request);
 
         $records = PbcAdvice::with('bank')
             ->where('barangay_id', $barangayId)
@@ -50,8 +46,7 @@ class PbcAdviceController extends Controller
         try {
 
             $user = $request->user();
-
-            $barangayId = $request->barangay_id ?: $user->barangay_id;
+            $barangayId = $this->resolveBarangay($request);
 
             // Prevent duplicate report for same bank/date range
             $existing = PbcAdvice::where('barangay_id', $barangayId)
@@ -108,24 +103,30 @@ class PbcAdviceController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $bankCheques = BankCheque::with('disbursement')
+           $bankCheques = ContBankCheque::with([
+                    'contDisbursement',
+                    'bank'
+                ])
                 ->join('barangay_bank_accounts as bba', function ($join) {
-                    $join->on('bank_cheques.bank_id', '=', 'bba.bank_id');
+                    $join->on('cont_bank_cheques.bank_id', '=', 'bba.bank_id');
                 })
-                ->where('bank_cheques.bank_id', $request->bank_id)
+                ->where('cont_bank_cheques.bank_id', $request->bank_id)
                 ->where('bba.bank_status', 'offline')
-                ->whereBetween('bank_cheques.cheque_date', [
+                ->whereBetween('cont_bank_cheques.cheque_date', [
                     $request->from_date,
                     $request->to_date
                 ])
-                ->whereHas('disbursement', function ($q) use ($barangayId) {
+                ->whereHas('contDisbursement', function ($q) use ($barangayId) {
                     $q->withoutGlobalScopes()
                     ->where('barangay_id', $barangayId);
                 })
-                ->select('bank_cheques.*')
+                ->select('cont_bank_cheques.*')
+                ->orderBy('cont_bank_cheques.cheque_date')
+                ->orderBy('cont_bank_cheques.cheque_number')
                 ->get();
 
             if ($bankCheques->isEmpty()) {
+
 
                 DB::rollBack();
 
@@ -148,7 +149,7 @@ class PbcAdviceController extends Controller
                 'advice_date'   => $today,
                 'from_date'     => $request->from_date,
                 'to_date'       => $request->to_date,
-                'voucher_count' => $bankCheques->pluck('disbursement_id')->unique()->count(),
+                'voucher_count' => $bankCheques->pluck('cont_disbursement_id')->unique()->count(),
                 'total_amount' => $bankCheques->sum('amount'),
                 'created_by'    => $user->id,
             ]);
@@ -162,9 +163,9 @@ class PbcAdviceController extends Controller
             foreach ($bankCheques as $cheque) {
 
                 PbcAdviceItem::create([
-                    'pbc_advice_id'  => $advice->id,
-                    'disbursement_id'=> $cheque->disbursement_id,
-                    'bank_cheque_id' => $cheque->id,
+                    'pbc_advice_id' => $advice->id,
+                    'cont_disbursement_id' => $cheque->cont_disbursement_id,
+                    'cont_bank_cheque_id' => $cheque->id,
                 ]);
 
             }
@@ -202,13 +203,7 @@ class PbcAdviceController extends Controller
     //GET api/barangay/pbc-advices/{id}
     public function show(Request $request, $id)
     {
-        $user = $request->user();
-
-        $barangayId = $request->barangay_id;
-
-        if (!$barangayId) {
-            $barangayId = $user->barangay_id;
-        }
+        $barangayId = $this->resolveBarangay($request);
 
         $advice = PbcAdvice::with([
             'bank',
@@ -229,13 +224,7 @@ class PbcAdviceController extends Controller
     //DELETE api/barangay/pbc-advices/{id}
     public function destroy(Request $request, $id)
     {
-        $user = $request->user();
-
-        $barangayId = $request->barangay_id;
-
-        if (!$barangayId) {
-            $barangayId = $user->barangay_id;
-        }
+        $barangayId = $this->resolveBarangay($request);
 
         $advice = PbcAdvice::where(
             'barangay_id',
@@ -251,5 +240,36 @@ class PbcAdviceController extends Controller
             'status'=>true,
             'message'=>'Advice deleted.'
         ]);
+    }
+
+    //Resolve the barangay ID depending on the authenticated user.
+    private function resolveBarangay(Request $request)
+    {
+        // Admin authenticated
+        if (Auth::guard('admin')->check()) {
+
+            if (!$request->filled('barangay_id')) {
+                throw new \Illuminate\Http\Exceptions\HttpResponseException(
+                    response()->json([
+                        'status' => false,
+                        'message' => 'Barangay is required.'
+                    ], 422)
+                );
+            }
+
+            return $request->barangay_id;
+        }
+
+        // Barangay authenticated
+        if (Auth::guard('barangay')->check()) {
+            return Auth::guard('barangay')->user()->barangay_id;
+        }
+
+        throw new \Illuminate\Http\Exceptions\HttpResponseException(
+            response()->json([
+                'status' => false,
+                'message' => 'Unauthenticated.'
+            ], 401)
+        );
     }
 }
