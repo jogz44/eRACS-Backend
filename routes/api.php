@@ -27,6 +27,7 @@ use App\Http\Controllers\Library\RegisteredPayeeController;
 use App\Http\Controllers\ChequeController;
 use App\Http\Controllers\BarangaySetupController;
 use App\Http\Controllers\BankExportController;
+use App\Http\Controllers\PbcAdviceController;
 
 
 Route::prefix('barangay')->group(function () {
@@ -85,6 +86,13 @@ Route::prefix('barangay')->group(function () {
         Route::post('/setup', [BarangaySetupController::class, 'store']);
         Route::get('/setup/{id}', [BarangaySetupController::class, 'show']);
         Route::put('/setup/{id}', [BarangaySetupController::class, 'update']);
+
+        //Generate PBC Reports
+        Route::get('/pbc-advices', [PbcAdviceController::class, 'index']);
+        Route::post('/pbc-advices', [PbcAdviceController::class, 'store']);
+        Route::get('/pbc-advices/{id}', [PbcAdviceController::class, 'show']);
+        Route::delete('/pbc-advices/{id}', [PbcAdviceController::class, 'destroy']);
+
 
         //Accounts Library
 
@@ -395,6 +403,12 @@ Route::prefix('admin')->group(function () {
         // Admin report endpoints
         Route::get('/report/sacb', [ReportController::class, 'getSacbReport']);
         Route::get('/report/rac', [ReportController::class, 'getRacReport']);
+
+        //Admin Generate PBC Report
+        Route::get('/pbc-advices', [PbcAdviceController::class, 'index']);
+        Route::post('/pbc-advices', [PbcAdviceController::class, 'store']);
+        Route::get('/pbc-advices/{id}', [PbcAdviceController::class, 'show']);
+        Route::delete('/pbc-advices/{id}', [PbcAdviceController::class, 'destroy']);
 
         // Admin banks endpoint (list all banks for selection in admin UI)
         Route::get('/banks', [\App\Http\Controllers\Library\BankLibraryController::class, 'getBanks']);
