@@ -21,6 +21,7 @@ class ContPbcAdviceController extends Controller
 
         $records = PbcAdvice::with('bank')
             ->where('barangay_id', $barangayId)
+            ->where('type', 'continuing')
             ->orderByDesc('advice_date')
             ->get();
 
@@ -50,6 +51,7 @@ class ContPbcAdviceController extends Controller
 
             // Prevent duplicate report for same bank/date range
             $existing = PbcAdvice::where('barangay_id', $barangayId)
+                ->where('type', 'continuing')
                 ->where('bank_id', $request->bank_id)
                 ->whereDate('from_date', $request->from_date)
                 ->whereDate('to_date', $request->to_date)
@@ -145,12 +147,13 @@ class ContPbcAdviceController extends Controller
             $advice = PbcAdvice::create([
                 'barangay_id'   => $barangayId,
                 'bank_id'       => $request->bank_id,
+                'type'          => 'continuing',
                 'advice_no'     => $adviceNo,
                 'advice_date'   => $today,
                 'from_date'     => $request->from_date,
                 'to_date'       => $request->to_date,
                 'voucher_count' => $bankCheques->pluck('cont_disbursement_id')->unique()->count(),
-                'total_amount' => $bankCheques->sum('amount'),
+                'total_amount'  => $bankCheques->sum('amount'),
                 'created_by'    => $user->id,
             ]);
 
@@ -213,6 +216,7 @@ class ContPbcAdviceController extends Controller
             'items.contDisbursement',
         ])
         ->where('barangay_id', $barangayId)
+        ->where('type', 'continuing')
         ->findOrFail($id);
 
         return response()->json([
@@ -230,6 +234,7 @@ class ContPbcAdviceController extends Controller
             'barangay_id',
             $barangayId
         )
+        ->where('type', 'continuing')
         ->findOrFail($id);
 
         $advice->items()->delete();
@@ -245,8 +250,8 @@ class ContPbcAdviceController extends Controller
     //Resolve the barangay ID depending on the authenticated user.
     private function resolveBarangay(Request $request)
     {
-        // Admin authenticated
-        if (Auth::guard('admin')->check()) {
+        // Admin API routes
+        if ($request->routeIs('admin.*') || $request->is('api/admin/*')) {
 
             if (!$request->filled('barangay_id')) {
                 throw new \Illuminate\Http\Exceptions\HttpResponseException(
@@ -260,16 +265,18 @@ class ContPbcAdviceController extends Controller
             return $request->barangay_id;
         }
 
-        // Barangay authenticated
-        if (Auth::guard('barangay')->check()) {
-            return Auth::guard('barangay')->user()->barangay_id;
+        // Barangay API routes
+        $user = Auth::user();
+
+        if (!$user || !isset($user->barangay_id)) {
+            throw new \Illuminate\Http\Exceptions\HttpResponseException(
+                response()->json([
+                    'status' => false,
+                    'message' => 'Unauthenticated.'
+                ], 401)
+            );
         }
 
-        throw new \Illuminate\Http\Exceptions\HttpResponseException(
-            response()->json([
-                'status' => false,
-                'message' => 'Unauthenticated.'
-            ], 401)
-        );
+        return $user->barangay_id;
     }
 }

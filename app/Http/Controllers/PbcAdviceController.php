@@ -25,6 +25,7 @@ class PbcAdviceController extends Controller
 
         $records = PbcAdvice::with('bank')
             ->where('barangay_id', $barangayId)
+            ->where('type', 'regular')
             ->orderByDesc('advice_date')
             ->get();
 
@@ -55,11 +56,11 @@ class PbcAdviceController extends Controller
 
             // Prevent duplicate report for same bank/date range
             $existing = PbcAdvice::where('barangay_id', $barangayId)
+                ->where('type', 'regular')
                 ->where('bank_id', $request->bank_id)
                 ->whereDate('from_date', $request->from_date)
                 ->whereDate('to_date', $request->to_date)
                 ->first();
-
             if ($existing) {
 
                 DB::rollBack();
@@ -144,12 +145,13 @@ class PbcAdviceController extends Controller
             $advice = PbcAdvice::create([
                 'barangay_id'   => $barangayId,
                 'bank_id'       => $request->bank_id,
+                'type'          => 'regular',
                 'advice_no'     => $adviceNo,
                 'advice_date'   => $today,
                 'from_date'     => $request->from_date,
                 'to_date'       => $request->to_date,
                 'voucher_count' => $bankCheques->pluck('disbursement_id')->unique()->count(),
-                'total_amount' => $bankCheques->sum('amount'),
+                'total_amount'  => $bankCheques->sum('amount'),
                 'created_by'    => $user->id,
             ]);
 
@@ -218,6 +220,7 @@ class PbcAdviceController extends Controller
             'items.contDisbursement',
         ])
         ->where('barangay_id', $barangayId)
+        ->where('type', 'regular')
         ->findOrFail($id);
 
         return response()->json([
@@ -241,6 +244,7 @@ class PbcAdviceController extends Controller
             'barangay_id',
             $barangayId
         )
+        ->where('type', 'regular')
         ->findOrFail($id);
 
         $advice->items()->delete();

@@ -20,39 +20,31 @@ class BankLibraryController extends Controller
      */
     public function getBanks(Request $request)
     {
-        // Determine authenticated user
-        $admin = Auth::guard('admin')->user();
-        $barangayUser = Auth::guard('barangay')->user();
+        if ($request->is('api/admin/*')) {
 
-        // Debug (safe logging)
-        \Log::info('getBanks called', [
-            'is_admin' => $admin ? true : false,
-            'admin_id' => $admin?->id,
-            'barangay_user_id' => $barangayUser?->id,
-            'request_barangay_id' => $request->barangay_id,
-        ]);
+            $barangayId = $request->get('barangay_id');
 
-        // Determine barangay ID
-        if ($admin) {
-            if (!$request->filled('barangay_id')) {
+            if (!$barangayId) {
                 return response()->json([
-                    'message' => 'barangay_id is required for admin requests.'
+                    'message' => 'barangay_id is required.'
                 ], 400);
             }
 
-            $barangayId = $request->barangay_id;
-        } elseif ($barangayUser) {
-            $barangayId = $barangayUser->barangay_id;
         } else {
-            return response()->json([
-                'message' => 'Unauthenticated.'
-            ], 401);
+
+            $user = Auth::guard('barangay')->user();
+
+            if (!$user) {
+                return response()->json([
+                    'message' => 'Unauthenticated.'
+                ], 401);
+            }
+
+            $barangayId = $user->barangay_id;
         }
 
-        // Update bank statuses
         $this->updateBanksStatus($barangayId);
 
-        // Fetch banks
         $banks = LibBank::where('barangay_id', $barangayId)
             ->withCount('booklets')
             ->get()
@@ -67,6 +59,7 @@ class BankLibraryController extends Controller
 
         return response()->json($banks);
     }
+    
         /**
          * Create a new bank
          */

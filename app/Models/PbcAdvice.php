@@ -12,6 +12,8 @@ class PbcAdvice extends Model
 
         'barangay_id',
 
+        'type',
+
         'bank_id',
 
         'advice_no',
