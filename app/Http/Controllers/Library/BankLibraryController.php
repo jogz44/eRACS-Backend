@@ -22,26 +22,38 @@ class BankLibraryController extends Controller
     {
         if ($request->is('api/admin/*')) {
 
-            $barangayId = $request->get('barangay_id');
+            $query = LibBank::query();
 
-            if (!$barangayId) {
-                return response()->json([
-                    'message' => 'barangay_id is required.'
-                ], 400);
+            if ($request->filled('barangay_id')) {
+                $query->where('barangay_id', $request->barangay_id);
+                $this->updateBanksStatus($request->barangay_id);
             }
 
-        } else {
+            $banks = $query
+                ->withCount('booklets')
+                ->get()
+                ->map(function ($bank) {
+                    return [
+                        'id' => $bank->id,
+                        'name' => $bank->bank_name,
+                        'status' => ucfirst($bank->status),
+                        'booklets_count' => $bank->booklets_count,
+                        'barangay_id' => $bank->barangay_id,
+                    ];
+                });
 
-            $user = Auth::guard('barangay')->user();
-
-            if (!$user) {
-                return response()->json([
-                    'message' => 'Unauthenticated.'
-                ], 401);
-            }
-
-            $barangayId = $user->barangay_id;
+            return response()->json($banks);
         }
+
+        $user = Auth::guard('barangay')->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.'
+            ], 401);
+        }
+
+        $barangayId = $user->barangay_id;
 
         $this->updateBanksStatus($barangayId);
 
@@ -59,7 +71,7 @@ class BankLibraryController extends Controller
 
         return response()->json($banks);
     }
-    
+
         /**
          * Create a new bank
          */

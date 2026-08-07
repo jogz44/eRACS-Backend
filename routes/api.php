@@ -314,20 +314,22 @@ Route::prefix('barangay')->group(function () {
         Route::get('bir-remittances/{id}', [BirRemittanceController::class, 'show']);
         Route::put('bir-remittances/{id}', [BirRemittanceController::class, 'update']);
         Route::delete('bir-remittances/{id}', [BirRemittanceController::class, 'destroy']);
+        Route::get('/barangay/bir-remittances/pending-tax-total', [BirRemittanceController::class, 'pendingTaxTotal']);
 
+        // SK - Provincial 
         // Route::get('sk-aid', [FundTransferController::class, 'index']);
         // Route::post('sk-aid', [FundTransferController::class, 'store']);
         // Route::get('sk-aid/{id}', [FundTransferController::class, 'show']);
         Route::get('fund-transfers', [FundTransferController::class, 'index']);
         Route::post('fund-transfers', [FundTransferController::class, 'store']);
         Route::get('fund-transfers/{id}', [FundTransferController::class, 'show']);
+        Route::put('/fund-transfers/{id}', [FundTransferController::class, 'update']);
         Route::post('fund-transfers/{id}/void-request', [FundTransferController::class, 'requestVoid']);
         Route::post('fund-transfers/{id}/void-direct', [FundTransferController::class, 'voidDirect']);
         Route::post('fund-transfers/{id}/void-approve', [FundTransferController::class, 'approveVoid']);
         Route::post('fund-transfers/{id}/void-reject', [FundTransferController::class, 'rejectVoid']);
 
-        Route::get('/barangay/bir-remittances/pending-tax-total',
-    [BirRemittanceController::class, 'pendingTaxTotal']);
+
     });
 
 });

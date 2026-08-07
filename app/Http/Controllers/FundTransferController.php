@@ -10,6 +10,7 @@ use App\Models\LibCheque;
 use App\Models\LibFiscalYear;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use App\Http\Controllers\AdminAuthController;
 
 class FundTransferController extends Controller
@@ -213,7 +214,7 @@ class FundTransferController extends Controller
             }
 
             (new \App\Http\Controllers\Library\BankLibraryController())
-                ->updateBanksStatus();
+                ->updateBanksStatus($user->barangay_id);
 
             DB::commit();
 
@@ -257,6 +258,65 @@ class FundTransferController extends Controller
             ->findOrFail($id);
 
         return response()->json(['status' => true, 'data' => $this->format($record)]);
+    }
+
+    // PUT /api/barangay/fund-transfers/{id}
+    public function update(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'type'          => 'required|in:sk,provincial_aid',
+            'date'          => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
+
+            'dv_number' => [
+                'required',
+                'string',
+                \Illuminate\Validation\Rule::unique('fund_transfers', 'dv_number')->ignore($id),
+            ],
+
+            'payee'   => 'required|string|max:255',
+            'amount'  => 'required|numeric|min:0.01',
+            'remarks' => 'nullable|string|max:1000',
+        ]);
+
+        DB::beginTransaction();
+
+        try {
+
+            $user = $request->user();
+
+            $record = FundTransfer::where(
+                'barangay_id',
+                $user->barangay_id
+            )->findOrFail($id);
+
+            [$dd, $mm, $yyyy] = explode('/', $validated['date']);
+
+            $record->update([
+                'type'      => $validated['type'],
+                'date'      => "$yyyy-$mm-$dd",
+                'dv_number' => $validated['dv_number'],
+                'payee'     => $validated['payee'],
+                'amount'    => $validated['amount'],
+                'remarks'   => $validated['remarks'] ?? null,
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Fund Transfer updated successfully.',
+                'data' => $record
+            ]);
+
+        } catch (\Exception $e) {
+
+            DB::rollBack();
+
+            return response()->json([
+                'status' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     // POST /api/barangay/fund-transfers/{id}/void-request
@@ -340,7 +400,7 @@ class FundTransferController extends Controller
             }
 
             (new \App\Http\Controllers\Library\BankLibraryController())
-                ->updateBanksStatus();
+                ->updateBanksStatus($user->barangay_id);
 
             AdminAuthController::logUserAction(
                 $user,
@@ -422,7 +482,7 @@ class FundTransferController extends Controller
             }
 
             (new \App\Http\Controllers\Library\BankLibraryController())
-                ->updateBanksStatus();
+                ->updateBanksStatus($user->barangay_id);
 
             AdminAuthController::logUserAction(
                 $user,

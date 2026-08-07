@@ -46,10 +46,11 @@ class BarangaySetupController extends Controller
 
             'bank_accounts'                  => 'required|array|min:1',
             'bank_accounts.*.id'             => 'nullable|integer',
-            'bank_accounts.*.bank_id'        => 'required|exists:lib_banks,id',
+            'bank_accounts.*.bank_id'        => 'nullable|exists:lib_banks,id',
+            'bank_accounts.*.bank_name'      => 'nullable|string|max:255',
             'bank_accounts.*.account_number' => 'required|string|max:100',
-            'bank_accounts.*.bank_status' => 'required|in:online,offline',
-            'bank_accounts.*.is_default' => 'nullable|boolean',
+            'bank_accounts.*.bank_status'    => 'required|in:online,offline',
+            'bank_accounts.*.is_default'     => 'nullable|boolean',
 
             'noted_by'                       => 'required|string|max:255',
             'noted_by_position_id'           => 'required|exists:barangay_positions,id',
@@ -64,18 +65,24 @@ class BarangaySetupController extends Controller
 
         if ($defaultCount !== 1) {
             return response()->json([
-                'status' => false,
+                'status'  => false,
                 'message' => 'Exactly one bank account must be marked as default.'
             ], 422);
         }
 
         // Prevent duplicate bank/account combinations
         $duplicates = collect($request->bank_accounts)
-            ->map(fn ($item) => $item['bank_id'].'-'.$item['account_number']);
+            ->map(function ($item) {
+
+                $bankKey = $item['bank_id']
+                    ?? strtolower(trim($item['bank_name'] ?? ''));
+
+                return $bankKey . '-' . trim($item['account_number']);
+            });
 
         if ($duplicates->count() !== $duplicates->unique()->count()) {
             return response()->json([
-                'status' => false,
+                'status'  => false,
                 'message' => 'Duplicate bank account entries are not allowed.'
             ], 422);
         }
@@ -99,19 +106,35 @@ class BarangaySetupController extends Controller
             );
 
             // Remove existing bank accounts
-            $setup->bankAccounts()->delete();
+            // $setup->bankAccounts()->delete();
 
             // Save all bank accounts
             foreach ($request->bank_accounts as $bank) {
 
+                $bankId = $bank['bank_id'] ?? null;
+
+                //User typed a new bank
+                if (!$bankId && !empty($bank['bank_name'])) {
+                    $libBank = \App\Models\LibBank::firstOrCreate(
+                        [
+                            'barangay_id' => $user->barangay_id,
+                            'bank_name'   => trim($bank['bank_name']),
+                        ],
+                        [
+                            'status' => 'available',
+                        ]
+                    );
+
+                    $bankId = $libBank->id;
+                }
+
                 $setup->bankAccounts()->create([
-                    'bank_id'        => $bank['bank_id'],
+                    'bank_id'        => $bankId,
                     'account_number' => $bank['account_number'],
                     'bank_status'    => $bank['bank_status'],
                     'is_default'     => $bank['is_default'] ?? false,
                 ]);
             }
-
         });
 
         return response()->json([
@@ -147,7 +170,7 @@ class BarangaySetupController extends Controller
 
         return response()->json([
             'status' => true,
-            'data' => $this->transform($setup),
+            'data'   => $this->transform($setup),
         ]);
     }
 
@@ -164,10 +187,11 @@ class BarangaySetupController extends Controller
 
             'bank_accounts'                  => 'required|array|min:1',
             'bank_accounts.*.id'             => 'nullable|exists:barangay_bank_accounts,id',
-            'bank_accounts.*.bank_id'        => 'required|exists:lib_banks,id',
+            'bank_accounts.*.bank_id'        => 'nullable|exists:lib_banks,id',
+            'bank_accounts.*.bank_name'      => 'nullable|string|max:255',
             'bank_accounts.*.account_number' => 'required|string|max:100',
-            'bank_accounts.*.bank_status' => 'required|in:online,offline',
-            'bank_accounts.*.is_default' => 'nullable|boolean',
+            'bank_accounts.*.bank_status'    => 'required|in:online,offline',
+            'bank_accounts.*.is_default'     => 'nullable|boolean',
 
             'noted_by'                       => 'required|string|max:255',
             'noted_by_position_id'           => 'required|exists:barangay_positions,id',
@@ -187,7 +211,7 @@ class BarangaySetupController extends Controller
 
         if ($defaultCount !== 1) {
             return response()->json([
-                'status' => false,
+                'status'  => false,
                 'message' => 'Exactly one bank account must be marked as default.'
             ], 422);
         }
@@ -199,11 +223,17 @@ class BarangaySetupController extends Controller
         */
 
         $duplicates = collect($request->bank_accounts)
-            ->map(fn($item) => trim($item['bank_id']) . '-' . trim($item['account_number']));
+            ->map(function ($item) {
+
+                $bankKey = $item['bank_id']
+                    ?? strtolower(trim($item['bank_name'] ?? ''));
+
+                return $bankKey . '-' . trim($item['account_number']);
+            });
 
         if ($duplicates->count() !== $duplicates->unique()->count()) {
             return response()->json([
-                'status' => false,
+                'status'  => false,
                 'message' => 'Duplicate bank account entries are not allowed.'
             ], 422);
         }
@@ -229,10 +259,41 @@ class BarangaySetupController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        $existingIds = $setup->bankAccounts()->pluck('id')->toArray();
+        $user = $request->user();
+
+        $existingIds  = $setup->bankAccounts()->pluck('id')->toArray();
         $submittedIds = [];
 
         foreach ($request->bank_accounts as $account) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Resolve bank_id
+            |--------------------------------------------------------------------------
+            */
+
+            $bankId = $account['bank_id'] ?? null;
+
+            // User entered a new bank manually
+            if (!$bankId && !empty($account['bank_name'])) {
+
+                $libBank = \App\Models\LibBank::firstOrCreate(
+                    [
+                        'barangay_id' => $user->barangay_id,
+                        'bank_name'   => trim($account['bank_name']),
+                    ],
+                    [
+                        'status' => 'available',
+                    ]
+                );
+                $bankId = $libBank->id;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Update existing account
+            |--------------------------------------------------------------------------
+            */
 
             if (!empty($account['id'])) {
 
@@ -243,7 +304,7 @@ class BarangaySetupController extends Controller
                 if ($bankAccount) {
 
                     $bankAccount->update([
-                        'bank_id'        => $account['bank_id'],
+                        'bank_id'        => $bankId,
                         'account_number' => $account['account_number'],
                         'bank_status'    => $account['bank_status'],
                         'is_default'     => !empty($account['is_default']),
@@ -254,8 +315,14 @@ class BarangaySetupController extends Controller
 
             } else {
 
+                /*
+                |--------------------------------------------------------------------------
+                | Create new account
+                |--------------------------------------------------------------------------
+                */
+
                 $newAccount = $setup->bankAccounts()->create([
-                    'bank_id'        => $account['bank_id'],
+                    'bank_id'        => $bankId,
                     'account_number' => $account['account_number'],
                     'bank_status'    => $account['bank_status'],
                     'is_default'     => !empty($account['is_default']),
@@ -271,11 +338,11 @@ class BarangaySetupController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        $idsToDelete = array_diff($existingIds, $submittedIds);
+        // $idsToDelete = array_diff($existingIds, $submittedIds);
 
-        if (!empty($idsToDelete)) {
-            BarangayBankAccount::whereIn('id', $idsToDelete)->delete();
-        }
+        // if (!empty($idsToDelete)) {
+        //     BarangayBankAccount::whereIn('id', $idsToDelete)->delete();
+        // }
 
         /*
         |--------------------------------------------------------------------------
@@ -284,9 +351,9 @@ class BarangaySetupController extends Controller
         */
 
         return response()->json([
-            'status' => true,
+            'status'  => true,
             'message' => 'Barangay setup updated successfully.',
-            'data' => $this->transform(
+            'data'    => $this->transform(
                 $setup->fresh()->load([
                     'barangay',
                     'user',
@@ -307,10 +374,10 @@ class BarangaySetupController extends Controller
         return [
             'id' => $setup->id,
 
-            'barangay_id'             => $setup->barangay_id,
-            'barangay'                => optional($setup->barangay)->name,
+            'barangay_id'              => $setup->barangay_id,
+            'barangay'                 => optional($setup->barangay)->name,
 
-            'registered_user_id'      => $setup->registered_user_id,
+            'registered_user_id'       => $setup->registered_user_id,
 
             'prepared_by'              => $setup->prepared_by,
 
@@ -331,18 +398,18 @@ class BarangaySetupController extends Controller
 
             'bank_accounts' => $setup->bankAccounts->map(function ($account) {
                 return [
-                    'id' => $account->id,
-                    'bank_id' => $account->bank_id,
-                    'bank' => optional($account->bank)->bank_name,
+                    'id'             => $account->id,
+                    'bank_id'        => $account->bank_id,
+                    'bank'           => optional($account->bank)->bank_name,
+                    'bank_name'      => optional($account->bank)->bank_name,
                     'account_number' => $account->account_number,
-                    'bank_status' => $account->bank_status,
-                    'is_default' => (bool) $account->is_default,
+                    'bank_status'    => $account->bank_status,
+                    'is_default'     => (bool) $account->is_default,
                 ];
-
             })->values(),
 
-            'created_at'               => $setup->created_at,
-            'updated_at'               => $setup->updated_at,
+            'created_at'  => $setup->created_at,
+            'updated_at'  => $setup->updated_at,
         ];
     }
 }
