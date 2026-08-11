@@ -41,7 +41,7 @@ class BarangaySetupController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'registered_user_id'             => 'required|exists:barangay_users,id',
+            'registered_user_id'             => 'nullable|exists:barangay_users,id',
             'barangay_position_id'           => 'required|exists:barangay_positions,id',
 
             'bank_accounts'                  => 'required|array|min:1',
@@ -89,14 +89,16 @@ class BarangaySetupController extends Controller
 
         $user = $request->user();
 
-        DB::transaction(function () use ($request, $user, &$setup) {
+        $registeredUserId = $request->input('registered_user_id') ?: $user->id;
+
+        DB::transaction(function () use ($request, $user, $registeredUserId, &$setup) {
 
             $setup = BarangaySetup::updateOrCreate(
                 [
                     'barangay_id' => $user->barangay_id,
                 ],
                 [
-                    'registered_user_id'       => $request->registered_user_id,
+                    'registered_user_id'       => $registeredUserId,
                     'barangay_position_id'     => $request->barangay_position_id,
                     'noted_by'                 => $request->noted_by,
                     'noted_by_position_id'     => $request->noted_by_position_id,
@@ -181,8 +183,17 @@ class BarangaySetupController extends Controller
     {
         $setup = BarangaySetup::with('bankAccounts')->findOrFail($id);
 
+        $user = $request->user();
+
+        // Keep existing registered user if frontend doesn't send one
+        $registeredUserId = $request->input('registered_user_id');
+
+        if (!$registeredUserId) {
+            $registeredUserId = $setup->registered_user_id ?: $user->id;
+        }
+
         $request->validate([
-            'registered_user_id'             => 'required|exists:barangay_users,id',
+            'registered_user_id'             => 'nullable|exists:barangay_users,id',
             'barangay_position_id'           => 'required|exists:barangay_positions,id',
 
             'bank_accounts'                  => 'required|array|min:1',
@@ -245,7 +256,7 @@ class BarangaySetupController extends Controller
         */
 
         $setup->update([
-            'registered_user_id'       => $request->registered_user_id,
+            'registered_user_id'       => $registeredUserId,
             'barangay_position_id'     => $request->barangay_position_id,
             'noted_by'                 => $request->noted_by,
             'noted_by_position_id'     => $request->noted_by_position_id,
@@ -258,8 +269,6 @@ class BarangaySetupController extends Controller
         | Sync Bank Accounts
         |--------------------------------------------------------------------------
         */
-
-        $user = $request->user();
 
         $existingIds  = $setup->bankAccounts()->pluck('id')->toArray();
         $submittedIds = [];
