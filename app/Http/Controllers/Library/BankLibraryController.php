@@ -12,6 +12,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\AdminAuthController;
 use App\Models\Admin;
+use App\Models\BankCheque;
 
 class BankLibraryController extends Controller
 {
@@ -72,192 +73,290 @@ class BankLibraryController extends Controller
         return response()->json($banks);
     }
 
-        /**
-         * Create a new bank
-         */
-        public function createBank(Request $request)
-        {
-            $validated = $request->validate([
-                'name' => 'required|string|min:3|max:255',
-            ]);
+    /**
+     * Create a new bank
+     */
+    public function createBank(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|min:3|max:255',
+        ]);
 
-            $bank = LibBank::create([
-                'bank_name' => $validated['name'],
-                'status' => 'unavailable',
-                'barangay_id' => Auth::user()->barangay_id, // Add this line
-            ]);
+        $bank = LibBank::create([
+            'bank_name' => $validated['name'],
+            'status' => 'unavailable',
+            'barangay_id' => Auth::user()->barangay_id, // Add this line
+        ]);
 
 
-            AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Creation','Bank '.$bank->bank_name.' has been created');
+        AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Creation','Bank '.$bank->bank_name.' has been created');
 
-            $this->updateBanksStatus($barangayId);
-            return response()->json([
-                'id' => $bank->id,
-                'name' => $bank->bank_name,
-                'status' => ucfirst($bank->status),
-                'cheques_count' => 0,
-            ], 201);
-        }
-        public function updateBanksStatus($barangayId)
-        {
-            $banks = LibBank::where('barangay_id', $barangayId)->get();
+        $this->updateBanksStatus($barangayId);
+        return response()->json([
+            'id' => $bank->id,
+            'name' => $bank->bank_name,
+            'status' => ucfirst($bank->status),
+            'cheques_count' => 0,
+        ], 201);
+    }
 
-            foreach ($banks as $bank) {
 
-                $totalBooklets = $bank->booklets()->count();
+    public function updateBanksStatus($barangayId)
+    {
+        $banks = LibBank::where('barangay_id', $barangayId)->get();
 
-                if ($totalBooklets === 0) {
-                    $bank->status = 'unavailable';
-                } else {
+        foreach ($banks as $bank) {
 
-                    $booklets = LibBooklet::where('bank_id', $bank->id)->get();
+            $totalBooklets = $bank->booklets()->count();
 
-                    foreach ($booklets as $booklet) {
+            if ($totalBooklets === 0) {
+                $bank->status = 'unavailable';
+            } else {
 
-                        $totalCheques = $booklet->cheques()->count();
-                        $usedCheques = $booklet->cheques()
-                            ->where('status', '!=', 'unused')
-                            ->count();
+                $booklets = LibBooklet::where('bank_id', $bank->id)->get();
 
-                        if ($usedCheques == 0) {
-                            $booklet->status = 'unused';
-                        } elseif ($usedCheques == $totalCheques) {
-                            $booklet->status = 'consumed';
-                        } else {
-                            $booklet->status = 'not all consumed';
-                        }
+                foreach ($booklets as $booklet) {
 
-                        $booklet->save();
+                    $totalCheques = $booklet->cheques()->count();
+                    $usedCheques = $booklet->cheques()
+                        ->where('status', '!=', 'unused')
+                        ->count();
+
+                    if ($usedCheques == 0) {
+                        $booklet->status = 'unused';
+                    } elseif ($usedCheques == $totalCheques) {
+                        $booklet->status = 'consumed';
+                    } else {
+                        $booklet->status = 'not all consumed';
                     }
 
-                    $hasAvailable = $bank->booklets()
-                        ->where('status', '!=', 'consumed')
-                        ->exists();
-
-                    $bank->status = $hasAvailable
-                        ? 'available'
-                        : 'consumed';
+                    $booklet->save();
                 }
 
-                $bank->save();
+                $hasAvailable = $bank->booklets()
+                    ->where('status', '!=', 'consumed')
+                    ->exists();
+
+                $bank->status = $hasAvailable
+                    ? 'available'
+                    : 'consumed';
             }
+
+            $bank->save();
+        }
+    }
+
+    /**
+     * Update a bank
+     */
+    public function updateBank(Request $request, LibBank $bank)
+    {
+        // Verify bank belongs to user's barangay
+        if ($bank->barangay_id !== Auth::user()->barangay_id) {
+            return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        /**
-         * Update a bank
-         */
-        public function updateBank(Request $request, LibBank $bank)
-        {
-            // Verify bank belongs to user's barangay
-            if ($bank->barangay_id !== Auth::user()->barangay_id) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
+        $validated = $request->validate([
+            'name' => 'required|string|min:3|max:255'
+        ]);
 
-            $validated = $request->validate([
-                'name' => 'required|string|min:3|max:255'
-            ]);
+        $oldName = $bank->bank_name;
 
-            $oldName = $bank->bank_name;
+        $bank->update([
+            'bank_name' => $validated['name']
+        ]);
 
-            $bank->update([
-                'bank_name' => $validated['name']
-            ]);
-
-            AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Update','Bank rename from "'.$oldName.'" to "'.$bank->bank_name.'".');
+        AdminAuthController::logUserAction(Auth::guard('barangay')->user(),'Bank Update','Bank rename from "'.$oldName.'" to "'.$bank->bank_name.'".');
 
         $this->updateBanksStatus($barangayId);
 
+        return response()->json([
+            'id' => $bank->id,
+            'name' => $bank->bank_name,
+        ]);
+    }
+
+    public function deleteBank(LibBank $bank)
+    {
+        // Verify bank belongs to user's barangay
+        if ($bank->barangay_id !== Auth::user()->barangay_id) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        // Check if bank has booklets before deleting
+        if ($bank->booklets()->exists()) {
             return response()->json([
-                'id' => $bank->id,
-                'name' => $bank->bank_name,
+                'message' => 'Cannot delete bank with existing booklets'
+            ], 422);
+        }
+
+        // Check if bank has disbursements before deleting
+        if ($bank->disbursements()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete bank with existing disbursements'
+            ], 422);
+        }
+
+        $bankName = $bank->bank_name;
+        $bank->delete();
+
+        AdminAuthController::logUserAction(Auth::guard('barangay')->user(), 'Bank Deletion', 'Bank ' . $bankName . ' has been deleted.');
+
+        $this->updateBanksStatus($barangayId);
+            return response()->json(['message' => 'Bank deleted successfully']);
+    }
+
+    // Get all cheques for a booklet
+    public function getBookletCheques($bookletId)
+    {
+        try {
+            $bookletId = (int) $bookletId;
+
+            if ($bookletId <= 0) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Invalid booklet ID'
+                ], 400);
+            }
+
+            $booklet = LibBooklet::with('bank')->findOrFail($bookletId);
+
+            // Verify barangay access
+            if (!$booklet->bank || $booklet->bank->barangay_id != Auth::user()->barangay_id) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Unauthorized'
+                ], 403);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get all LibCheque records belonging to this booklet
+            |--------------------------------------------------------------------------
+            */
+            $libCheques = $booklet->cheques()
+                ->with('disbursement')
+                ->get();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Get the corresponding BankCheque records
+            |
+            | bank_cheques does NOT have booklet_id, so we match using:
+            | bank_id + cheque_number + disbursement_id
+            |--------------------------------------------------------------------------
+            */
+            $bankCheques = BankCheque::where('bank_id', $booklet->bank_id)
+                ->whereIn('cheque_number', $libCheques->pluck('cheque_number'))
+                ->get()
+                ->keyBy(function ($bankCheque) {
+                    return $bankCheque->bank_id
+                        . '_' .
+                        $bankCheque->cheque_number
+                        . '_' .
+                        ($bankCheque->disbursement_id ?? 'null');
+                });
+
+            /*
+            |--------------------------------------------------------------------------
+            | Build response
+            |--------------------------------------------------------------------------
+            */
+            $cheques = $libCheques->map(function ($cheque) use ($bankCheques, $booklet) {
+
+                $disbursementId = $cheque->disbursement_id;
+
+                /*
+                |--------------------------------------------------------------------------
+                | Find the individual BankCheque record
+                |--------------------------------------------------------------------------
+                */
+                $bankChequeKey = $booklet->bank_id
+                    . '_'
+                    . $cheque->cheque_number
+                    . '_'
+                    . ($disbursementId ?? 'null');
+
+                $bankCheque = $bankCheques->get($bankChequeKey);
+
+                /*
+                |--------------------------------------------------------------------------
+                | IMPORTANT:
+                |
+                | amount = individual cheque allocation
+                |          from bank_cheques.amount
+                |
+                | dv_amount = complete/final DV amount
+                |             from disbursements.dv_amount
+                |--------------------------------------------------------------------------
+                */
+                $individualChequeAmount = $bankCheque
+                    ? $bankCheque->amount
+                    : null;
+
+                return [
+                    'id' => $cheque->id,
+
+                    'cheque_number' => $cheque->cheque_number,
+
+                    'cheque_status' => $cheque->status,
+
+                    'created_at' => $cheque->created_at
+                        ? $cheque->created_at->format('Y-m-d')
+                        : null,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | DV information
+                    |--------------------------------------------------------------------------
+                    */
+                    'dvn' => $cheque->disbursement?->dv_number ?? 'none',
+
+                    'dv_number' => $cheque->disbursement?->dv_number,
+
+                    'dv_amount' => $cheque->disbursement?->dv_amount,
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | THIS IS THE IMPORTANT CHANGE
+                    |
+                    | The frontend's "amount" field now represents the amount
+                    | individually allocated to THIS cheque.
+                    |--------------------------------------------------------------------------
+                    */
+                    'amount' => $individualChequeAmount !== null
+                        ? (float) $individualChequeAmount
+                        : null,
+                ];
+            });
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Success',
+                'data' => $cheques,
+                'cheques' => $cheques
             ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Booklet not found'
+            ], 404);
+
+        } catch (\Exception $e) {
+
+            \Log::error('Error fetching booklet cheques', [
+                'booklet_id' => $bookletId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Server error: ' . $e->getMessage()
+            ], 500);
         }
-
-        public function deleteBank(LibBank $bank)
-        {
-            // Verify bank belongs to user's barangay
-            if ($bank->barangay_id !== Auth::user()->barangay_id) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
-
-            // Check if bank has booklets before deleting
-            if ($bank->booklets()->exists()) {
-                return response()->json([
-                    'message' => 'Cannot delete bank with existing booklets'
-                ], 422);
-            }
-
-            // Check if bank has disbursements before deleting
-            if ($bank->disbursements()->exists()) {
-                return response()->json([
-                    'message' => 'Cannot delete bank with existing disbursements'
-                ], 422);
-            }
-
-            $bankName = $bank->bank_name;
-            $bank->delete();
-
-            AdminAuthController::logUserAction(Auth::guard('barangay')->user(), 'Bank Deletion', 'Bank ' . $bankName . ' has been deleted.');
-
-            $this->updateBanksStatus($barangayId);
-                return response()->json(['message' => 'Bank deleted successfully']);
-        }
-
-        /**
-         * Get all cheques for a bank
-         */
-        public function getBookletCheques($bookletId)
-        {
-            try {
-                // Convert to integer and validate
-                $bookletId = (int)$bookletId;
-                if ($bookletId <= 0) {
-                    return response()->json([
-                        'status' => false,
-                        'message' => 'Invalid booklet ID'
-                    ], 400);
-                }
-
-                $booklet = LibBooklet::with('bank')->findOrFail($bookletId);
-
-                // Verify barangay access
-                if ($booklet->bank->barangay_id != Auth::user()->barangay_id) {
-                    return response()->json(['message' => 'Unauthorized'], 403);
-                }
-
-                $cheques = $booklet->cheques()
-                    ->with('disbursement')
-                    ->get()
-                    ->map(function ($cheque) {
-                        return [
-                            'id' => $cheque->id,
-                            'cheque_number' => $cheque->cheque_number,
-                            'cheque_status' => $cheque->status,
-                            'created_at' => $cheque->created_at->format('Y-m-d'),
-                            'dvn' => $cheque->disbursement->dv_number ?? 'none',
-                            'dvamount' => $cheque->disbursement->dv_amount ?? null,
-                        ];
-                    });
-
-                return response()->json([
-                    'status' => true,
-                    'message' => 'Success',
-                    'data' => $cheques,
-                    'cheques' => $cheques
-                ]);
-
-            } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Booklet not found'
-                ], 404);
-            } catch (\Exception $e) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Server error: ' . $e->getMessage()
-                ], 500);
-            }
-        }
+    }
 
     public function getBankBooklets(LibBank $bank)
     {
@@ -290,135 +389,149 @@ class BankLibraryController extends Controller
     }
 
 
-        public function getAvailableBookletCheques(Request $request, $bankId){
-            // Get all unused booklets and every unused cheques for the selected bank
-            $bank = LibBank::where('id',$bankId);
+    public function getAvailableBookletCheques(Request $request, $bankId)
+    {
+        // Get all unused booklets and every unused cheques for the selected bank
+        $bank = LibBank::where('id',$bankId);
 
-            //get first booklet of the bank filtered by booklet_numb
-            $booklet=LibBooklet::where('bank_id',$bankId)
-                ->where(function ($query) {
-                    $query->where('status', 'unused')
-                        ->orWhere('status', 'not all consumed');
-                })
-                ->orderBy('booklet_numb','asc')
-                ->first();
-            // get first cheque of the booklet filtered by cheque_number
-            if($booklet){
-                $cheque = $booklet->cheques()
-                    ->where('status', 'unused')
-                    ->get()
-                    ->map(function ($cheque) {
-                        return [
-                            'id' => $cheque->id,
-                            'cheque_number' => $cheque->cheque_number,
-                            'status' => $cheque->status,
-                        ];
-                    });
-                return response()->json([
-                    'status' => true,
-                    'message' => 'Available booklet and cheques retrieved successfully',
-                    'data' => [
-                        'id' => $booklet->id,
-                        'date' => $booklet->created_at->format('Y-m-d'),
-                        'booklet_numb' => $booklet->booklet_numb,
-                        'quantity' => (int)$booklet->ending_cheque_numb - (int)$booklet->starting_cheque_numb + 1,
-                        'starting_cheque_numb' => $booklet->starting_cheque_numb,
-                        'ending_cheque_numb' => $booklet->ending_cheque_numb,
-                        'status' => $booklet->status,
-                        'cheque' => $cheque,
-                        'stever'=>$bankId,
-                        'steve'=>$booklet
-                    ],
-                ]);
-            }else{
-                return response()->json([
-                    'status' => false,
-                    'message' => 'No available booklets found for this bank',
-                    'data' => null,
-                ]);
-            }
+        //get first booklet of the bank filtered by booklet_numb
+        $booklet=LibBooklet::where('bank_id',$bankId)
+            ->where(function ($query) {
+                $query->where('status', 'unused')
+                    ->orWhere('status', 'not all consumed');
+            })
+            ->orderBy('booklet_numb','asc')
+            ->first();
+        // get first cheque of the booklet filtered by cheque_number
+        if($booklet){
+            $cheque = $booklet->cheques()
+                ->where('status', 'unused')
+                ->get()
+                ->map(function ($cheque) {
+                    return [
+                        'id' => $cheque->id,
+                        'cheque_number' => $cheque->cheque_number,
+                        'status' => $cheque->status,
+                    ];
+                });
+            return response()->json([
+                'status' => true,
+                'message' => 'Available booklet and cheques retrieved successfully',
+                'data' => [
+                    'id' => $booklet->id,
+                    'date' => $booklet->created_at->format('Y-m-d'),
+                    'booklet_numb' => $booklet->booklet_numb,
+                    'quantity' => (int)$booklet->ending_cheque_numb - (int)$booklet->starting_cheque_numb + 1,
+                    'starting_cheque_numb' => $booklet->starting_cheque_numb,
+                    'ending_cheque_numb' => $booklet->ending_cheque_numb,
+                    'status' => $booklet->status,
+                    'cheque' => $cheque,
+                    'stever'=>$bankId,
+                    'steve'=>$booklet
+                ],
+            ]);
+        }else{
+            return response()->json([
+                'status' => false,
+                'message' => 'No available booklets found for this bank',
+                'data' => null,
+            ]);
         }
+    }
 
     public function createBooklet(Request $request, LibBank $bank)
     {
         // Verify bank belongs to user's barangay
         if ($bank->barangay_id !== Auth::user()->barangay_id) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json([
+                'message' => 'Unauthorized'
+            ], 403);
         }
 
         $validated = $request->validate([
-            'booklet_numb' => 'required|string',
-            'starting_cheque_numb' => 'required|string|size:8|regex:/^[0-9]+$/',
-            'quantity' => 'required|integer|min:1|max:50',
+            'booklet_numb'         => 'required|string',
+            'starting_cheque_numb' => 'required|string|regex:/^[0-9]+$/',
+            'quantity'             => 'required|integer|min:1',
         ]);
 
-        // Convert to integers for validation
-        $bookletNumb = (int)$validated['booklet_numb'];
-        $start = (int)$validated['starting_cheque_numb'];
-        $quantity = (int)$validated['quantity'];
+        // Keep booklet number as string
+        $bookletNumb = $validated['booklet_numb'];
+
+        $start = (int) $validated['starting_cheque_numb'];
+        $quantity = (int) $validated['quantity'];
 
         // Calculate ending cheque number
         $end = $start + $quantity - 1;
 
-        // Validate range
-        if ($quantity > 50) {
-            return response()->json(['message' => 'Maximum 50 cheques per booklet'], 422);
-        }
-
-        // Start database transaction
+        //Start database transaction
         DB::beginTransaction();
+
         try {
-            // Create the booklet first (without cheques)
+
+            //Create the booklet first
             $booklet = $bank->booklets()->create([
-                //'booklet_numb' => $validated['starting_cheque_numb'] . '-' . $validated['ending_cheque_numb'],
-                'booklet_numb' => $validated['booklet_numb'],
+                'booklet_numb'         => $validated['booklet_numb'],
                 'starting_cheque_numb' => $validated['starting_cheque_numb'],
-                'ending_cheque_numb' => $end,
-                'quantity' => $validated['quantity'],
-                'status' => 'unused',
+                'ending_cheque_numb'   => $end,
+                'quantity'             => $quantity,
+                'status'               => 'unused',
             ]);
 
-            // Generate and validate cheque numbers one by one
+            //Generate cheques
             for ($i = $start; $i <= $end; $i++) {
-                $chequeNumber = str_pad($i, 8, '0', STR_PAD_LEFT);
 
-                // Check if this cheque number exists in ANY booklet of THIS bank
-                $exists = LibCheque::whereHas('booklet', function($query) use ($bank) {
-                        $query->where('bank_id', $bank->id);
-                    })
-                    ->where('cheque_number', $chequeNumber)
-                    ->exists();
+                $chequeNumber = (string) $i;
+
+                //Prevent duplicate cheque numbers within this bank
+                $exists = LibCheque::whereHas('booklet', function ($query) use ($bank) {
+                    $query->where('bank_id', $bank->id);
+                })
+                ->where('cheque_number', $chequeNumber)
+                ->exists();
 
                 if ($exists) {
-                    throw new \Exception("Cheque number {$chequeNumber} already exists in this bank");
+                    throw new \Exception(
+                        "Cheque number {$chequeNumber} already exists in this bank."
+                    );
                 }
 
-                // Create cheque with original 8-digit number
+                //Create cheque
                 $booklet->cheques()->create([
                     'cheque_number' => $chequeNumber,
-                    'status' => 'unused',
+                    'status'        => 'unused',
                 ]);
             }
 
             DB::commit();
 
-            AdminAuthController::logUserAction(Auth::guard('barangay')->user(),
-            'Booklet Creation', 'Booklet ' . $booklet->booklet_numb .
-            ' has been created with ' . $quantity . ' cheques in Bank '. $bank->bank_name);
+            //Log booklet creation
+            AdminAuthController::logUserAction(
+                Auth::guard('barangay')->user(),
+                'Booklet Creation',
+                'Booklet ' . $booklet->booklet_numb .
+                ' has been created with ' . $quantity .
+                ' cheques in Bank ' . $bank->bank_name
+            );
+
+            //Update bank status
+            $barangayId = $bank->barangay_id;
+
             $this->updateBanksStatus($barangayId);
 
             return response()->json([
-                'id' => $booklet->id,
-                'booklet_numb' => $booklet->booklet_numb,
+                'id'                   => $booklet->id,
+                'booklet_numb'         => $booklet->booklet_numb,
                 'starting_cheque_numb' => $booklet->starting_cheque_numb,
-                'ending_cheque_numb' => $booklet->ending_cheque_numb,
-                'quantity' => $quantity,
-                'status' => $booklet->status,
-                'created_at' => $booklet->created_at->format('Y-m-d'),
+                'ending_cheque_numb'   => $booklet->ending_cheque_numb,
+                'quantity'             => $quantity,
+                'status'               => $booklet->status,
+                'created_at'           => $booklet->created_at->format('Y-m-d'),
             ], 201);
 
         } catch (\Exception $e) {
+
             DB::rollBack();
+
             return response()->json([
                 'message' => 'Failed to create booklet: ' . $e->getMessage()
             ], 500);

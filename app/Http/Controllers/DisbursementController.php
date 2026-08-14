@@ -252,13 +252,14 @@ class DisbursementController extends Controller
     {
         $request->validate([
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
-            'dv_number' => 'required|string|unique:disbursements,dv_number',
+            'dv_number' => 'nullable|string',
 
             'payee' => 'required|string',
             'payee2' => 'required|string',
 
             'dv_amount' => 'required|numeric|min:0',
-            'expenses' => 'array',
+
+            'expenses' => 'nullable|array',
             'expenses.*.accountId' => 'required|integer',
             'expenses.*.amount' => 'required|numeric|min:0',
             'expenses.*.particular' => 'nullable|string',
@@ -269,14 +270,48 @@ class DisbursementController extends Controller
             'expenses.*.expense_class_id' => 'nullable|exists:lib_expense_classes,id',
             'expenses.*.expense_type_id' => 'nullable|exists:lib_expense_types,id',
             'expenses.*.expense_item_id' => 'nullable|exists:lib_expense_items,id',
-            'barangay_id' => 'nullable|exists:barangays,id', // Added for admin
+
+            'bank_cheques' => 'nullable|array',
+            'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
+            'bank_cheques.*.cheque_number' => 'required|string',
+            'bank_cheques.*.cheque_date' => 'nullable|date',
+            'bank_cheques.*.amount' => 'required|numeric|min:0',
+
+            // Only used when authenticated as admin
+            'barangay_id' => 'nullable|exists:barangays,id',
         ]);
 
         try {
+
+            //AUTHENTICATED USER
             $user = $request->user();
+            $adminUser = $request->user('admin');
+
+            $authUser = $user ?: $adminUser;
+
+            if (!$authUser) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Unauthenticated.'
+                ], 401);
+            }
+
+            //DETERMINE BARANGAY
+            $barangayId = ($adminUser && $request->filled('barangay_id'))
+                ? $request->barangay_id
+                : ($user->barangay_id ?? null);
+
+            if (!$barangayId) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Barangay could not be determined.'
+                ], 422);
+            }
+
+            //LOAD BARANGAY SETUP
 
             $setup = \App\Models\BarangaySetup::with('bankAccounts')
-                ->where('barangay_id', $user->barangay_id)
+                ->where('barangay_id', $barangayId)
                 ->first();
 
             if (!$setup) {
@@ -286,268 +321,523 @@ class DisbursementController extends Controller
                 ], 422);
             }
 
-            $adminUser = $request->user('admin');
-
-            // Determine barangay_id based on user type (only honor request for admin)
-            $barangayId = $adminUser && $request->filled('barangay_id')
-                ? $request->barangay_id
-                : $user->barangay_id;
-
-            // Convert date from DD/MM/YYYY to YYYY-MM-DD
+            /*
+            |--------------------------------------------------------------------------
+            | CONVERT DATE
+            |
+            | Frontend format:
+            | DD/MM/YYYY
+            |
+            | Example:
+            | 13/08/2026
+            |
+            | Database:
+            | 2026-08-13
+            |
+            | DV:
+            | DV-26-08-001
+            |--------------------------------------------------------------------------
+            */
             $dateParts = explode('/', $request->date);
-            $formattedDate = $dateParts[2] . '-' . $dateParts[1] . '-' . $dateParts[0];
 
-            $disbursement = Disbursement::create([
-                'barangay_id' => $barangayId,
-                'date' => $formattedDate,
-                'dv_number' => $request->dv_number,
+            $day = $dateParts[0];
+            $month = $dateParts[1];
+            $year = $dateParts[2];
 
-                'payee' => $request->payee,
-                'payee2' => $request->payee2,
-                'dv_amount' => $request->dv_amount,
+            // Make sure the date is actually valid
+            if (!checkdate(
+                (int) $month,
+                (int) $day,
+                (int) $year
+            )) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Invalid date.'
+                ], 422);
+            }
 
-                'status' => 'Unliquidated',
-            ]);
-
-            // ===============================================
-            // Build bank cheque list
-            // ===============================================
-
-            \Log::info('FULL REQUEST', $request->all());
-
-            $bankChequeTotals = [];
+            $formattedDate = sprintf(
+                '%04d-%02d-%02d',
+                $year,
+                $month,
+                $day
+            );
 
             /*
             |--------------------------------------------------------------------------
-            | Preferred: use bank_cheques from frontend
+            | DV NUMBER PREFIX
+            |--------------------------------------------------------------------------
+            |
+            | 13/08/2026
+            |
+            | becomes:
+            |
+            | DV-26-08-
             |--------------------------------------------------------------------------
             */
-            if ($request->filled('bank_cheques') && is_array($request->bank_cheques)) {
+            $prefix = 'DV-' . substr($year, 2, 2) . '-' . $month . '-';
 
-                foreach ($request->bank_cheques as $cheque) {
-
-                    $key = $cheque['bank_id'].'_'.$cheque['cheque_number'];
-
-                    $bankChequeTotals[$key] = [
-                        'bank_id'       => $cheque['bank_id'],
-                        'cheque_number' => $cheque['cheque_number'],
-                        'cheque_date'   => $cheque['cheque_date'] ?? null,
-                        'amount'        => (float) $cheque['amount'],
-                    ];
-                }
-            }
             /*
             |--------------------------------------------------------------------------
-            | Fallback: derive cheques from expenses
+            | CREATE DISBURSEMENT
+            |
+            | Everything below is inside a transaction so that if something
+            | fails, the newly-created disbursement and related records
+            | are rolled back.
             |--------------------------------------------------------------------------
             */
-            elseif ($request->filled('expenses') && is_array($request->expenses)) {
+            $result = DB::transaction(function () use (
+                $request,
+                $barangayId,
+                $setup,
+                $authUser,
+                $prefix,
+                $formattedDate
+            ) {
 
-                foreach ($request->expenses as $expense) {
+                /*
+                |--------------------------------------------------------------------------
+                | GENERATE NEXT DV NUMBER
+                |--------------------------------------------------------------------------
+                */
+                $lastDv = Disbursement::where('barangay_id', $barangayId)
+                    ->where('dv_number', 'like', $prefix . '%')
+                    ->orderByDesc('id')
+                    ->lockForUpdate()
+                    ->value('dv_number');
 
-                    if (empty($expense['bank_id']) || empty($expense['cheque_number'])) {
-                        continue;
-                    }
 
-                    $key = $expense['bank_id'].'_'.$expense['cheque_number'];
+                if ($lastDv) {
 
-                    if (!isset($bankChequeTotals[$key])) {
+                    $lastSequence = (int) substr($lastDv, -3);
 
-                        $bankChequeTotals[$key] = [
-                            'bank_id'       => $expense['bank_id'],
-                            'cheque_number' => $expense['cheque_number'],
-                            'cheque_date'   => $expense['cheque_date'] ?? null,
-                            'amount'        => 0,
-                        ];
-                    }
+                    $nextSequence = $lastSequence + 1;
 
-                    $bankChequeTotals[$key]['amount'] += (float) $expense['amount'];
-                }
-            }
+                } else {
 
-            // ===============================================
-            // Save one BankCheque record per cheque
-            // ===============================================
-            foreach ($bankChequeTotals as $cheque) {
-
-                $bankAccount = $setup->bankAccounts
-                    ->where('bank_id', $cheque['bank_id'])
-                    ->first();
-
-                if (!$bankAccount) {
-                    return response()->json([
-                        'status' => false,
-                        'message' => 'Selected bank has not been configured in Barangay Setup.'
-                    ], 422);
+                    $nextSequence = 1;
                 }
 
-                \Log::info('Saving cheque', $cheque);
-
-                BankCheque::create([
-                    'disbursement_id' => $disbursement->id,
-                    'bank_id' => $cheque['bank_id'],
-                    'cheque_number' => $cheque['cheque_number'],
-                    'cheque_date' => $cheque['cheque_date'],
-                    'amount' => $cheque['amount'],
-                ]);
-
-                // ===============================================
-                // Mark cheque as USED
-                // ===============================================
-                $bookletIds = LibBooklet::where('bank_id', $cheque['bank_id'])
-                    ->pluck('id');
-
-                $libCheque = LibCheque::whereIn('booklet_id', $bookletIds)
-                    ->where('cheque_number', $cheque['cheque_number'])
-                    ->where('status', 'unused')
-                    ->first();
-
-                if ($libCheque) {
-
-                    $libCheque->update([
-                        'status' => 'used',
-                        'disbursement_id' => $disbursement->id,
-                    ]);
-
-                }
-            }
-
-            // Save expense details to tran_expense_details table
-            $logExpenseLines = [];
-            if ($request->has('expenses') && is_array($request->expenses)) {
-                foreach ($request->expenses as $expense) {
-                    // Find the appropriate appropriation based on expense hierarchy
-                    $appropriationQuery = TranAppropriation::where('barangay_id', $barangayId)
-                        ->where('status', 'committed');
-
-                    if (!empty($expense['expense_sub_item_id'])) {
-                        $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
-                    } elseif (!empty($expense['expense_item_id'])) {
-                        $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-                    } elseif (!empty($expense['expense_type_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->where('expense_type_id', $expense['expense_type_id']);
-                    } elseif (!empty($expense['expense_class_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->whereNull('expense_type_id')
-                            ->where('expense_class_id', $expense['expense_class_id']);
-                    }
-
-                    $appropriation = $appropriationQuery->first();
-
-                    if ($appropriation) {
-                        // Create expense detail with the disbursement ID
-                        TranExpenseDetail::create([
-                            'disbursement_id' => $disbursement->id,
-                            'appropriation_id' => $appropriation->id,
-                            'amount' => $expense['amount'],
-                            'particulars' => $expense['particular'] ?? '',
-                            'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
-
-                            'bank_id' => $expense['bank_id'] ?? null,
-                        ]);
-
-                        // Prepare log line per expense
-                        $accountName = $this->getAccountNameFromAppropriationId($appropriation->id);
-                        $logExpenseLines[] = sprintf(
-                            'Disbursed Expense %s with the amount ₱%s%s',
-                            $accountName,
-                            number_format((float)$expense['amount'], 2),
-                            isset($expense['particular']) && $expense['particular'] !== '' ? ' for "' . $expense['particular'] . '"' : ''
-                        );
-                    }
-                }
-            }
-
-            // Log created disbursement
-            try {
-
-                $chequeSummary = $disbursement->bankCheques
-                    ->map(function ($cheque) {
-
-                        return sprintf(
-                            '%s - %s (₱%s)',
-                            optional($cheque->bank)->bank_name,
-                            $cheque->cheque_number,
-                            number_format($cheque->amount,2)
-                        );
-
-                    })
-                    ->implode(', ');
-
-                $topLine = sprintf(
-                    '#%s for Payee "%s" with the amount ₱%s. Cheques: %s',
-                    $disbursement->dv_number,
-                    $disbursement->payee,
-                    number_format($disbursement->dv_amount,2),
-                    $chequeSummary
-                );
-                // Header log
-                AdminAuthController::logUserAction(
-                    $user,
-                    'Created Disbursement',
-                    $topLine
-                );
-                // Detail logs per expense (kept concise to avoid length limits)
-                foreach ($logExpenseLines as $line) {
-                    AdminAuthController::logUserAction(
-                        $user,
-                        'Disbursed Expense',
-                        sprintf('#%s | %s', $disbursement->dv_number, $line)
+                //PROTECT AGAINST MORE THAN 999 RECORDS
+                if ($nextSequence > 999) {
+                    throw new \Exception(
+                        'DV number sequence has reached its maximum of 999 for this month.'
                     );
                 }
-            } catch (\Throwable $logEx) {
-                \Log::warning('Failed to write disbursement logs: ' . $logEx->getMessage());
-            }
 
-            // ===================================================
-            // Generate export only if at least one selected bank
-            // is configured as ONLINE in Barangay Setup
-            // ===================================================
 
-            $hasOnlineBank = collect($bankChequeTotals)->contains(function ($cheque) use ($setup) {
-
-                $bankAccount = $setup->bankAccounts
-                    ->where('bank_id', $cheque['bank_id'])
-                    ->first();
-
-                return $bankAccount && $bankAccount->bank_status === 'online';
-            });
-
-            if ($hasOnlineBank) {
-
-                \Log::info('ONLINE BANK DETECTED');
-
-                $filename = sprintf(
-                    'BANK_EXPORT_%d_%s.txt',
-                    $disbursement->id,
-                    now()->format('YmdHis')
+                $dvNumber = $prefix . str_pad(
+                    $nextSequence,
+                    3,
+                    '0',
+                    STR_PAD_LEFT
                 );
 
-                BankExportFile::create([
-                    'disbursement_id'   => $disbursement->id,
-                    'barangay_setup_id' => $setup->id,
-                    'generated_by'      => $user->id,
-                    'filename'          => $filename,
-                    'filepath'          => '',
-                    'is_exported'       => false,
-                    'exported_at'       => null,
+                //CREATE DISBURSEMENT
+
+                $disbursement = Disbursement::create([
+                    'barangay_id' => $barangayId,
+                    'date'        => $formattedDate,
+                    'dv_number'   => $dvNumber,
+
+                    'payee'       => $request->payee,
+                    'payee2'      => $request->payee2,
+                    'dv_amount'   => $request->dv_amount,
+
+                    'status'      => 'Unliquidated',
                 ]);
 
-                \Log::info('BankExportFile Created');
-            }
+                //BUILD BANK CHEQUE LIST
+                \Log::info('FULL REQUEST', $request->all());
+
+                $bankChequeTotals = [];
+
+                //PREFERRED: USE bank_cheques FROM FRONTEND
+                if (
+                    $request->filled('bank_cheques') &&
+                    is_array($request->bank_cheques)
+                ) {
+
+                    foreach ($request->bank_cheques as $cheque) {
+
+                        $key = $cheque['bank_id'] . '_' . $cheque['cheque_number'];
+
+                        $bankChequeTotals[$key] = [
+                            'bank_id'       => $cheque['bank_id'],
+                            'cheque_number' => $cheque['cheque_number'],
+                            'cheque_date'   => $cheque['cheque_date'] ?? null,
+                            'amount'        => (float) $cheque['amount'],
+                        ];
+                    }
+                }
+
+                //FALLBACK: DERIVE CHEQUES FROM EXPENSES
+
+                elseif (
+                    $request->filled('expenses') &&
+                    is_array($request->expenses)
+                ) {
+
+                    foreach ($request->expenses as $expense) {
+
+                        if (
+                            empty($expense['bank_id']) ||
+                            empty($expense['cheque_number'])
+                        ) {
+                            continue;
+                        }
+
+                        $key = $expense['bank_id'] . '_' . $expense['cheque_number'];
+
+                        if (!isset($bankChequeTotals[$key])) {
+                            $bankChequeTotals[$key] = [
+                                'bank_id'       => $expense['bank_id'],
+                                'cheque_number' => $expense['cheque_number'],
+                                'cheque_date'   => $expense['cheque_date'] ?? null,
+                                'amount'        => 0,
+                            ];
+                        }
+
+                        $bankChequeTotals[$key]['amount'] +=
+                            (float) $expense['amount'];
+                    }
+                }
+
+                //SAVE BANK CHEQUES
+                foreach ($bankChequeTotals as $cheque) {
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | CHECK BANK IS CONFIGURED IN BARANGAY SETUP
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $bankAccount = $setup->bankAccounts
+                        ->where('bank_id', $cheque['bank_id'])
+                        ->first();
+
+
+                    if (!$bankAccount) {
+
+                        throw new \Exception(
+                            'Selected bank has not been configured in Barangay Setup.'
+                        );
+                    }
+
+
+                    \Log::info('Saving cheque', $cheque);
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | CREATE BANK CHEQUE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    BankCheque::create([
+                        'disbursement_id' => $disbursement->id,
+                        'bank_id'         => $cheque['bank_id'],
+                        'cheque_number'   => $cheque['cheque_number'],
+                        'cheque_date'     => $cheque['cheque_date'],
+                        'amount'          => $cheque['amount'],
+                    ]);
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | MARK LIB CHEQUE AS USED
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $bookletIds = LibBooklet::where(
+                        'bank_id',
+                        $cheque['bank_id']
+                    )->pluck('id');
+
+
+                    $libCheque = LibCheque::whereIn(
+                        'booklet_id',
+                        $bookletIds
+                    )
+                        ->where(
+                            'cheque_number',
+                            $cheque['cheque_number']
+                        )
+                        ->where('status', 'unused')
+                        ->first();
+
+
+                    if ($libCheque) {
+
+                        $libCheque->update([
+                            'status'         => 'used',
+                            'disbursement_id' => $disbursement->id,
+                        ]);
+                    }
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | SAVE EXPENSE DETAILS
+                |--------------------------------------------------------------------------
+                */
+
+                $logExpenseLines = [];
+
+
+                if (
+                    $request->has('expenses') &&
+                    is_array($request->expenses)
+                ) {
+
+                    foreach ($request->expenses as $expense) {
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | FIND APPROPRIATION
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $appropriationQuery = TranAppropriation::where(
+                            'barangay_id',
+                            $barangayId
+                        )
+                            ->where('status', 'committed');
+
+
+                        if (!empty($expense['expense_sub_item_id'])) {
+
+                            $appropriationQuery->where(
+                                'expense_sub_item_id',
+                                $expense['expense_sub_item_id']
+                            );
+
+                        } elseif (!empty($expense['expense_item_id'])) {
+
+                            $appropriationQuery->where(
+                                'expense_item_id',
+                                $expense['expense_item_id']
+                            );
+
+                        } elseif (!empty($expense['expense_type_id'])) {
+
+                            $appropriationQuery
+                                ->whereNull('expense_item_id')
+                                ->where(
+                                    'expense_type_id',
+                                    $expense['expense_type_id']
+                                );
+
+                        } elseif (!empty($expense['expense_class_id'])) {
+
+                            $appropriationQuery
+                                ->whereNull('expense_item_id')
+                                ->whereNull('expense_type_id')
+                                ->where(
+                                    'expense_class_id',
+                                    $expense['expense_class_id']
+                                );
+                        }
+
+
+                        $appropriation = $appropriationQuery->first();
+
+
+                        if ($appropriation) {
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | CREATE EXPENSE DETAIL
+                            |--------------------------------------------------------------------------
+                            */
+
+                            TranExpenseDetail::create([
+                                'disbursement_id' => $disbursement->id,
+                                'appropriation_id' => $appropriation->id,
+                                'amount'          => $expense['amount'],
+                                'particulars'     => $expense['particular'] ?? '',
+                                'cheque_number'   => $expense['cheque_number'] ?? null,
+                                'bank_id'         => $expense['bank_id'] ?? null,
+                            ]);
+
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | PREPARE LOG
+                            |--------------------------------------------------------------------------
+                            */
+
+                            $accountName =
+                                $this->getAccountNameFromAppropriationId(
+                                    $appropriation->id
+                                );
+
+
+                            $logExpenseLines[] = sprintf(
+                                'Disbursed Expense %s with the amount ₱%s%s',
+                                $accountName,
+                                number_format(
+                                    (float) $expense['amount'],
+                                    2
+                                ),
+                                isset($expense['particular']) &&
+                                $expense['particular'] !== ''
+                                    ? ' for "' . $expense['particular'] . '"'
+                                    : ''
+                            );
+                        }
+                    }
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | LOG CREATED DISBURSEMENT
+                |--------------------------------------------------------------------------
+                */
+
+                try {
+
+                    $chequeSummary = $disbursement->bankCheques
+                        ->map(function ($cheque) {
+
+                            return sprintf(
+                                '%s - %s (₱%s)',
+                                optional($cheque->bank)->bank_name,
+                                $cheque->cheque_number,
+                                number_format(
+                                    $cheque->amount,
+                                    2
+                                )
+                            );
+
+                        })
+                        ->implode(', ');
+
+
+                    $topLine = sprintf(
+                        '#%s for Payee "%s" with the amount ₱%s. Cheques: %s',
+                        $disbursement->dv_number,
+                        $disbursement->payee,
+                        number_format(
+                            $disbursement->dv_amount,
+                            2
+                        ),
+                        $chequeSummary
+                    );
+
+
+                    AdminAuthController::logUserAction(
+                        $authUser,
+                        'Created Disbursement',
+                        $topLine
+                    );
+
+
+                    foreach ($logExpenseLines as $line) {
+
+                        AdminAuthController::logUserAction(
+                            $authUser,
+                            'Disbursed Expense',
+                            sprintf(
+                                '#%s | %s',
+                                $disbursement->dv_number,
+                                $line
+                            )
+                        );
+                    }
+
+                } catch (\Throwable $logEx) {
+
+                    \Log::warning(
+                        'Failed to write disbursement logs: ' .
+                        $logEx->getMessage()
+                    );
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | CHECK FOR ONLINE BANK
+                |--------------------------------------------------------------------------
+                */
+
+                $hasOnlineBank = collect($bankChequeTotals)
+                    ->contains(function ($cheque) use ($setup) {
+
+                        $bankAccount = $setup->bankAccounts
+                            ->where('bank_id', $cheque['bank_id'])
+                            ->first();
+
+
+                        return $bankAccount &&
+                            $bankAccount->bank_status === 'online';
+                    });
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | GENERATE BANK EXPORT RECORD
+                |--------------------------------------------------------------------------
+                */
+
+                if ($hasOnlineBank) {
+
+                    \Log::info('ONLINE BANK DETECTED');
+
+
+                    $filename = sprintf(
+                        'BANK_EXPORT_%d_%s.txt',
+                        $disbursement->id,
+                        now()->format('YmdHis')
+                    );
+
+
+                    BankExportFile::create([
+                        'disbursement_id'   => $disbursement->id,
+                        'barangay_setup_id' => $setup->id,
+                        'generated_by'      => $authUser->id,
+                        'filename'          => $filename,
+                        'filepath'          => '',
+                        'is_exported'       => false,
+                        'exported_at'       => null,
+                    ]);
+
+
+                    \Log::info('BankExportFile Created');
+                }
+
+
+                return $disbursement;
+            });
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | SUCCESS RESPONSE
+            |--------------------------------------------------------------------------
+            */
 
             return response()->json([
-                'status' => true,
+                'status'  => true,
                 'message' => 'Disbursement created successfully',
-                'data' => $disbursement
+                'data'    => $result
             ], 201);
+
+
         } catch (\Exception $e) {
-            \Log::error('Error creating disbursement: ' . $e->getMessage());
+
+            \Log::error(
+                'Error creating disbursement: ' .
+                $e->getMessage()
+            );
+
+
             return response()->json([
-                'status' => false,
+                'status'  => false,
                 'message' => 'Failed to create disbursement',
-                'error' => $e->getMessage()
+                'error'   => $e->getMessage()
             ], 500);
         }
     }

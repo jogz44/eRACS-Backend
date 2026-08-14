@@ -3,8 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\LibCheque;
-use App\Models\Deduction;
-use App\Models\TranExpenseDetail;
 use App\Models\Disbursement;
 use Illuminate\Http\Request;
 
@@ -19,72 +17,50 @@ class ChequeController extends Controller
             'amount'          => 'required|numeric|min:0.01',
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 1: Determine Available Net Amount
-        |--------------------------------------------------------------------------
-        */
-        $lastDeduction = Deduction::where(
-            'disbursement_id',
+        //STEP 1: Get Disbursement
+        $disbursement = Disbursement::findOrFail(
             $validated['disbursement_id']
-        )
-        ->latest('id')
-        ->first();
+        );
 
-        if ($lastDeduction) {
+        //STEP 2: Determine FINAL Available Amount
+        $netAmount = (float) $disbursement->dv_amount;
 
-            // Use the final net amount after all deductions
-            $netAmount = (float) $lastDeduction->net_amount;
-
-        } else {
-
-            // No deductions yet → use original expense total
-            $netAmount = TranExpenseDetail::where(
-                'disbursement_id',
-                $validated['disbursement_id']
-            )->sum('amount');
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 2: Total Existing Cheques
-        |--------------------------------------------------------------------------
-        */
+        //STEP 4: Total Existing Cheques
         $totalChequeAmount = LibCheque::where(
             'disbursement_id',
             $validated['disbursement_id']
         )->sum('amount');
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 3: Remaining Balance
-        |--------------------------------------------------------------------------
-        */
-        $remainingBalance = $netAmount - $totalChequeAmount;
+        //STEP 5: Remaining Balance
+        $remainingBalance = round($netAmount - (float) $totalChequeAmount, 2);
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 4: Validate Amount
-        |--------------------------------------------------------------------------
-        */
-        if ($validated['amount'] > $remainingBalance) {
-
+        //STEP 6: Validate Cheque Amount
+        if ($remainingBalance <= 0) {
             return response()->json([
                 'status' => false,
-                'message' => 'Cheque amount exceeds remaining balance.',
+                'message' => 'The final DV amount has already been fully allocated to cheques.',
                 'data' => [
-                    'net_amount'         => round($netAmount, 2),
+                    'dv_amount'          => round($netAmount, 2),
                     'already_allocated'  => round($totalChequeAmount, 2),
-                    'remaining_balance'  => round($remainingBalance, 2),
+                    'remaining_balance'  => 0,
                 ]
             ], 422);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 5: Get Next Available Cheque
-        |--------------------------------------------------------------------------
-        */
+        if ((float) $validated['amount'] > $remainingBalance) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Cheque amount exceeds the remaining final DV amount.',
+                'data' => [
+                    'dv_amount'          => round($netAmount, 2),
+                    'already_allocated'  => round($totalChequeAmount, 2),
+                    'remaining_balance'  => round($remainingBalance, 2),
+                    'requested_amount'   => round((float) $validated['amount'], 2),
+                ]
+            ], 422);
+        }
+
+        //STEP 7: Get Next Available Cheque
         $cheque = LibCheque::where(
                 'booklet_id',
                 $validated['booklet_id']
@@ -97,42 +73,44 @@ class ChequeController extends Controller
             ->first();
 
         if (!$cheque) {
-
             return response()->json([
                 'status' => false,
                 'message' => 'No available cheques in this booklet.'
             ], 422);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 6: Assign Cheque
-        |--------------------------------------------------------------------------
-        */
+        //STEP 8: Assign Cheque
+        $chequeAmount = round(
+            (float) $validated['amount'],
+            2
+        );
+
         $cheque->update([
             'disbursement_id' => $validated['disbursement_id'],
             'cheque_date'     => $validated['cheque_date'],
-            'amount'          => round($validated['amount'], 2),
+            'amount'          => $chequeAmount,
             'status'          => 'used',
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | STEP 7: Return Response
-        |--------------------------------------------------------------------------
-        */
+        //STEP 9: Return Response
+        $newRemainingBalance = round(
+            $remainingBalance - $chequeAmount,
+            2
+        );
+
         return response()->json([
             'status' => true,
             'message' => 'Cheque added successfully.',
             'data' => [
                 'id'                => $cheque->id,
                 'cheque_number'     => $cheque->cheque_number,
-                'amount'            => $cheque->amount,
-                'net_amount'        => round($netAmount, 2),
-                'remaining_balance' => round(
-                    $remainingBalance - $validated['amount'],
-                    2
-                ),
+                'amount'            => $chequeAmount,
+
+                // Final amount of the DV
+                'dv_amount'         => round($netAmount, 2),
+
+                // Remaining amount available for another cheque
+                'remaining_balance' => $newRemainingBalance,
             ]
         ]);
     }

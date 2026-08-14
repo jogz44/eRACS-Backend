@@ -14,6 +14,7 @@ class LibBooklet extends Model
     protected $casts = [
         'id' => 'integer', // Ensure ID is always treated as integer
         'bank_id' => 'integer',
+        'quantity' => 'integer',
     ];
 
     protected $fillable = [
@@ -21,6 +22,7 @@ class LibBooklet extends Model
         'booklet_numb',
         'starting_cheque_numb',
         'ending_cheque_numb',
+        'quantity',
         'status'
     ];
     public function bank(): BelongsTo
@@ -32,6 +34,4 @@ class LibBooklet extends Model
     {
         return $this->hasMany(LibCheque::class, 'booklet_id');
     }
-
-
 }
