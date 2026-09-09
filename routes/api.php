@@ -149,6 +149,33 @@ Route::prefix('barangay')->group(function () {
         Route::put('expense-classes/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}', [AccountsLibController::class, 'updateSubItem']);
         Route::delete('expense-classes/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}', [AccountsLibController::class, 'deleteSubItem']);
 
+        // Sub-Type Routes (Under sub-items)
+        Route::get('/accounts/expense-class/{classId}/type/{typeId}/item/{itemId}/sub-item/{subItemId}/sub-types', [AccountsLibController::class, 'getSubTypes']);
+        Route::post('/accounts/expense-class/{classId}/type/{typeId}/item/{itemId}/sub-item/{subItemId}/sub-types', [AccountsLibController::class, 'createSubType']);
+        Route::put('/accounts/expense-class/{classId}/type/{typeId}/item/{itemId}/sub-item/{subItemId}/sub-types/{subTypeId}', [AccountsLibController::class, 'updateSubType']);
+        Route::delete('/accounts/expense-class/{classId}/type/{typeId}/item/{itemId}/sub-item/{subItemId}/sub-types/{subTypeId}', [AccountsLibController::class, 'deleteSubType']);
+
+        // Sub-Sub-Type Routes
+        Route::get(
+            '/accounts/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}/sub-types/{subTypeId}/sub-sub-types',
+            [AccountsLibController::class, 'getSubSubTypes']
+        )->name('accounts.sub-sub-types.index');
+
+        Route::post(
+            '/accounts/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}/sub-types/{subTypeId}/sub-sub-types',
+            [AccountsLibController::class, 'createSubSubType']
+        )->name('accounts.sub-sub-types.store');
+
+        Route::put(
+            '/accounts/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}/sub-types/{subTypeId}/sub-sub-types/{subSubTypeId}',
+            [AccountsLibController::class, 'updateSubSubType']
+        )->name('accounts.sub-sub-types.update');
+
+        Route::delete(
+            '/accounts/{classId}/types/{typeId}/items/{itemId}/sub-items/{subItemId}/sub-types/{subTypeId}/sub-sub-types/{subSubTypeId}',
+            [AccountsLibController::class, 'deleteSubSubType']
+        )->name('accounts.sub-sub-types.destroy');
+
         //Banks Library
         Route::get('banks', [BankLibraryController::class, 'getBanks']);
         Route::post('banks', [BankLibraryController::class, 'createBank']);
@@ -316,7 +343,7 @@ Route::prefix('barangay')->group(function () {
         Route::delete('bir-remittances/{id}', [BirRemittanceController::class, 'destroy']);
         Route::get('/barangay/bir-remittances/pending-tax-total', [BirRemittanceController::class, 'pendingTaxTotal']);
 
-        // SK - Provincial 
+        // SK - Provincial
         // Route::get('sk-aid', [FundTransferController::class, 'index']);
         // Route::post('sk-aid', [FundTransferController::class, 'store']);
         // Route::get('sk-aid/{id}', [FundTransferController::class, 'show']);

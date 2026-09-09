@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class LibExpenseItem extends Model
 {
@@ -29,6 +30,14 @@ class LibExpenseItem extends Model
     public function childItems()
     {
         return $this->hasMany(LibExpenseItem::class, 'parent_item_id');
+    }
+
+    public function subItems(): HasMany
+    {
+        return $this->hasMany(
+            LibExpenseSubItem::class,
+            'expense_item_id'
+        )->orderBy('order');
     }
 
     // Scopes
