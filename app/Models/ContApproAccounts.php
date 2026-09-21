@@ -14,26 +14,35 @@ class ContApproAccounts extends Model
         'current_amount',
         'continuingYear',
         'status',
-        'user_id'
+        'user_id',
     ];
 
     protected $casts = [
         'original_amount' => 'decimal:2',
-        'current_amount' => 'decimal:2'
+        'current_amount' => 'decimal:2',
     ];
 
-    public function continuingAppropriation()
+    public function continuingAppropriation(): BelongsTo
     {
-        return $this->belongsTo(ContAppropriation::class, 'contAppropriation_id');
+        return $this->belongsTo(
+            ContAppropriation::class,
+            'contAppropriation_id'
+        );
     }
 
-    public function transactionAppropriation()
+    public function transactionAppropriation(): BelongsTo
     {
-        return $this->belongsTo(TranAppropriation::class, 'tranAppropriation_id');
+        return $this->belongsTo(
+            TranAppropriation::class,
+            'tranAppropriation_id'
+        );
     }
 
-    public function user()
+    public function user(): BelongsTo
     {
-        return $this->belongsTo(BarangayUser::class);
+        return $this->belongsTo(
+            BarangayUser::class,
+            'user_id'
+        );
     }
 }

@@ -468,7 +468,10 @@ class AccountsLibController extends Controller
                     $subQuery->where('year', $fiscalYear);
                 });
             })
-            ->with(['types', 'fiscalYear'])
+            ->with([
+                'types.items.subItems.subTypes.subSubTypes',
+                'fiscalYear',
+            ])
             ->orderBy('order')
             ->get();
 
@@ -1546,12 +1549,7 @@ class AccountsLibController extends Controller
 
         $barangayId = Auth::user()->barangay_id;
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verify parent Expense Item
-        |--------------------------------------------------------------------------
-        */
-
+        //Verify parent Expense Item
         $expenseItem = LibExpenseItem::where('id', $itemId)
             ->where('expense_type_id', $typeId)
             ->whereNull('parent_item_id')
@@ -1565,34 +1563,19 @@ class AccountsLibController extends Controller
             ->firstOrFail();
 
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verify Sub Item
-        |--------------------------------------------------------------------------
-        */
-
+        //Verify Sub Item
         $subItem = LibExpenseSubItem::where('id', $subItemId)
             ->where('expense_item_id', $expenseItem->id)
             ->firstOrFail();
 
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verify Sub Type
-        |--------------------------------------------------------------------------
-        */
-
+        //Verify Sub Type
         $subType = LibExpenseSubType::where('id', $subTypeId)
             ->where('sub_item_id', $subItem->id)
             ->firstOrFail();
 
 
-        /*
-        |--------------------------------------------------------------------------
-        | Get Sub-Sub-Types
-        |--------------------------------------------------------------------------
-        */
-
+        //Get Sub-Sub-Types
         $subSubTypes = LibExpenseSubSubType::where(
             'sub_type_id',
             $subType->id
@@ -1745,109 +1728,102 @@ class AccountsLibController extends Controller
         ], 201);
     }
 
-    public function updateSubSubType(
-    Request $request,
-    $classId,
-    $typeId,
-    $itemId,
-    $subItemId,
-    $subTypeId,
-    $subSubTypeId
-) {
-    $this->verifyBarangayAccess();
+    public function updateSubSubType(Request $request, $classId, $typeId, $itemId, $subItemId, $subTypeId, $subSubTypeId)
+    {
+        $this->verifyBarangayAccess();
 
-    $barangayId = Auth::user()->barangay_id;
+        $barangayId = Auth::user()->barangay_id;
 
-    // Verify Expense Item
-    $expenseItem = LibExpenseItem::where('id', $itemId)
-        ->where('expense_type_id', $typeId)
-        ->whereNull('parent_item_id')
-        ->whereHas('expenseType.expenseClass', function ($query) use (
-            $classId,
-            $barangayId
-        ) {
-            $query->where('id', $classId)
-                ->where('barangay_id', $barangayId);
-        })
-        ->with('expenseType.expenseClass')
-        ->firstOrFail();
+        // Verify Expense Item
+        $expenseItem = LibExpenseItem::where('id', $itemId)
+            ->where('expense_type_id', $typeId)
+            ->whereNull('parent_item_id')
+            ->whereHas('expenseType.expenseClass', function ($query) use (
+                $classId,
+                $barangayId
+            ) {
+                $query->where('id', $classId)
+                    ->where('barangay_id', $barangayId);
+            })
+            ->with('expenseType.expenseClass')
+            ->firstOrFail();
 
-    // Verify Sub Item
-    $subItem = LibExpenseSubItem::where('id', $subItemId)
-        ->where('expense_item_id', $expenseItem->id)
-        ->firstOrFail();
+        // Verify Sub Item
+        $subItem = LibExpenseSubItem::where('id', $subItemId)
+            ->where('expense_item_id', $expenseItem->id)
+            ->firstOrFail();
 
-    // Verify Sub Type
-    $subType = LibExpenseSubType::where('id', $subTypeId)
-        ->where('sub_item_id', $subItem->id)
-        ->firstOrFail();
+        // Verify Sub Type
+        $subType = LibExpenseSubType::where('id', $subTypeId)
+            ->where('sub_item_id', $subItem->id)
+            ->firstOrFail();
 
-    // Verify Sub-Sub-Type
-    $subSubType = LibExpenseSubSubType::where(
-        'id',
-        $subSubTypeId
-    )
-        ->where('sub_type_id', $subType->id)
-        ->firstOrFail();
+        // Verify Sub-Sub-Type
+        $subSubType = LibExpenseSubSubType::where(
+            'id',
+            $subSubTypeId
+        )
+            ->where('sub_type_id', $subType->id)
+            ->firstOrFail();
 
-    $validated = $request->validate([
-        'name' => [
-            'required',
-            'string',
-            'max:255',
+        $validated = $request->validate([
+            'name' => [
+                'required',
+                'string',
+                'max:255',
 
-            Rule::unique('lib_expense_sub_sub_types')
-                ->ignore($subSubType->id)
-                ->where(function ($query) use ($subTypeId) {
-                    return $query->where(
-                        'sub_type_id',
-                        $subTypeId
-                    );
-                }),
-        ],
+                Rule::unique('lib_expense_sub_sub_types')
+                    ->ignore($subSubType->id)
+                    ->where(function ($query) use ($subTypeId) {
+                        return $query->where(
+                            'sub_type_id',
+                            $subTypeId
+                        );
+                    }),
+            ],
 
-        'order' => [
-            'nullable',
-            'integer',
-            'min:0',
-        ],
-    ]);
+            'order' => [
+                'nullable',
+                'integer',
+                'min:0',
+            ],
+        ]);
 
-    $oldName = $subSubType->name;
+        $oldName = $subSubType->name;
 
-    $subSubType->update($validated);
+        $subSubType->update($validated);
 
-    // Logging
-    $expenseType = $expenseItem->expenseType;
-    $expenseClass = $expenseType->expenseClass;
+        // Logging
+        $expenseType = $expenseItem->expenseType;
+        $expenseClass = $expenseType->expenseClass;
 
-    $fyYear = LibFiscalYear::whereKey(
-        $expenseClass->fiscal_year_id
-    )->value('year');
+        $fyYear = LibFiscalYear::whereKey(
+            $expenseClass->fiscal_year_id
+        )->value('year');
 
-    AdminAuthController::logUserAction(
-        Auth::guard('barangay')->user(),
-        'Accounts -> Sub-Sub-Types',
-        'Updated sub-sub-type "' .
-        $oldName .
-        '" to "' .
-        $subSubType->name .
-        '" under sub-type "' .
-        $subType->name .
-        '" under sub-item "' .
-        $subItem->name .
-        '" in item "' .
-        $expenseItem->name .
-        '" for fiscal year ' .
-        $fyYear
-    );
+        AdminAuthController::logUserAction(
+            Auth::guard('barangay')->user(),
+            'Accounts -> Sub-Sub-Types',
+            'Updated sub-sub-type "' .
+            $oldName .
+            '" to "' .
+            $subSubType->name .
+            '" under sub-type "' .
+            $subType->name .
+            '" under sub-item "' .
+            $subItem->name .
+            '" in item "' .
+            $expenseItem->name .
+            '" for fiscal year ' .
+            $fyYear
+        );
 
-    return response()->json([
-        'success' => true,
-        'message' => 'Sub-sub-type updated successfully.',
-        'data' => $subSubType->fresh(),
-    ]);
-}
+        return response()->json([
+            'success' => true,
+            'message' => 'Sub-sub-type updated successfully.',
+            'data' => $subSubType->fresh(),
+        ]);
+    }
 
     public function deleteSubSubType($classId, $typeId, $itemId, $subItemId, $subTypeId, $subSubTypeId)
     {

@@ -7,6 +7,9 @@ use App\Models\Budget;
 use App\Models\TranAppropriation;
 use App\Models\ContAppropriation;
 use App\Models\ContApproAccounts;
+use App\Models\LibExpenseClass;
+use App\Models\LibExpenseType;
+use App\Models\LibExpenseItem;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -14,97 +17,335 @@ use App\Models\Admin;
 
 class ContinuingAppropriationController extends Controller
 {
+
     public function index(Request $request)
     {
-        // Log user activity
-        // if ($request->user()) {
-        //     AdminAuthController::logUserAction($request->user(),'Visited Appropriation Page' ,'Visited Appropriation Page');
-        // }
+        // Get all previous-year appropriations that still have a remaining balance.
         $query = TranAppropriation::select(
-                        DB::raw('MIN(tran_appropriations.id) as id'),
-                        'tran_appropriations.expense_class_id',
-                        'tran_appropriations.expense_type_id',
-                        'tran_appropriations.expense_item_id',
-                        DB::raw('SUM(tran_appropriations.amount) as total_amount')
-                    )
-                    ->with(['expenseClass.fiscalYear', 'expenseType', 'expenseItem'])
-                    ->where('tran_appropriations.barangay_id', $request->user()->barangay_id)
-                    ->whereRelation('expenseClass.fiscalYear', 'year', '!=', now()->year)
-                    ->whereNotExists(function ($query) {
-                        $query->select(DB::raw(1))
-                              ->from('cont_appro_accounts')
-                              ->whereColumn('cont_appro_accounts.tranAppropriation_id', 'tran_appropriations.id')
-                              ->where('cont_appro_accounts.status', 'active');
-                    })
-                    ->groupBy(
-                        'tran_appropriations.expense_class_id',
-                        'tran_appropriations.expense_type_id',
-                        'tran_appropriations.expense_item_id'
-                    );
+            DB::raw('MIN(tran_appropriations.id) as id'),
+            'tran_appropriations.expense_class_id',
+            'tran_appropriations.expense_type_id',
+            'tran_appropriations.expense_item_id',
+            'tran_appropriations.expense_sub_item_id',
+            'tran_appropriations.expense_sub_type_id',
+            'tran_appropriations.expense_sub_sub_type_id',
+            DB::raw('SUM(tran_appropriations.amount) as total_amount')
+        )
+        ->with([
+            'expenseClass.fiscalYear',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+        ])
+        ->where(
+            'tran_appropriations.barangay_id',
+            $request->user()->barangay_id
+        )
+        ->whereRelation(
+            'expenseClass.fiscalYear',
+            'year',
+            '!=',
+            now()->year
+        )
+        ->whereNotExists(function ($query) {
+            $query->select(DB::raw(1))
+                ->from('cont_appro_accounts')
+                ->whereColumn(
+                    'cont_appro_accounts.tranAppropriation_id',
+                    'tran_appropriations.id'
+                )
+                ->where('cont_appro_accounts.status', 'active');
+        })
+        ->groupBy(
+            'tran_appropriations.expense_class_id',
+            'tran_appropriations.expense_type_id',
+            'tran_appropriations.expense_item_id',
+            'tran_appropriations.expense_sub_item_id',
+            'tran_appropriations.expense_sub_type_id',
+            'tran_appropriations.expense_sub_sub_type_id'
+        );
 
-
+        // Calculate the total amount already used/disbursed
+        // for each exact six-level appropriation.
         $detail = TranAppropriation::select(
-                        DB::raw('MIN(tran_appropriations.id) as id'),
-                        'tran_appropriations.expense_class_id',
-                        'tran_appropriations.expense_type_id',
-                        'tran_appropriations.expense_item_id',
-                        DB::raw('SUM(ISNULL(tran_expense_details.amount, 0)) as details_amount')
-                    )
-                    ->leftJoin('tran_expense_details', 'tran_expense_details.appropriation_id', '=', 'tran_appropriations.id')
-                    ->with(['expenseClass.fiscalYear', 'expenseType', 'expenseItem'])
-                    ->where('tran_appropriations.barangay_id', $request->user()->barangay_id)
-                    ->whereRelation('expenseClass.fiscalYear', 'year', '!=', now()->year)
-                    ->whereNotExists(function ($query) {
-                        $query->select(DB::raw(1))
-                              ->from('cont_appro_accounts')
-                              ->whereColumn('cont_appro_accounts.tranAppropriation_id', 'tran_appropriations.id')
-                              ->where('cont_appro_accounts.status', 'active');
-                    })
-                    ->groupBy(
-                        'tran_appropriations.expense_class_id',
-                        'tran_appropriations.expense_type_id',
-                        'tran_appropriations.expense_item_id'
-                    );
-
+            DB::raw('MIN(tran_appropriations.id) as id'),
+            'tran_appropriations.expense_class_id',
+            'tran_appropriations.expense_type_id',
+            'tran_appropriations.expense_item_id',
+            'tran_appropriations.expense_sub_item_id',
+            'tran_appropriations.expense_sub_type_id',
+            'tran_appropriations.expense_sub_sub_type_id',
+            DB::raw('SUM(ISNULL(tran_expense_details.amount, 0)) as details_amount')
+        )
+        ->leftJoin(
+            'tran_expense_details',
+            'tran_expense_details.appropriation_id',
+            '=',
+            'tran_appropriations.id'
+        )
+        ->with([
+            'expenseClass.fiscalYear',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+        ])
+        ->where(
+            'tran_appropriations.barangay_id',
+            $request->user()->barangay_id
+        )
+        ->whereRelation(
+            'expenseClass.fiscalYear',
+            'year',
+            '!=',
+            now()->year
+        )
+        ->whereNotExists(function ($query) {
+            $query->select(DB::raw(1))
+                ->from('cont_appro_accounts')
+                ->whereColumn(
+                    'cont_appro_accounts.tranAppropriation_id',
+                    'tran_appropriations.id'
+                )
+                ->where('cont_appro_accounts.status', 'active');
+        })
+        ->groupBy(
+            'tran_appropriations.expense_class_id',
+            'tran_appropriations.expense_type_id',
+            'tran_appropriations.expense_item_id',
+            'tran_appropriations.expense_sub_item_id',
+            'tran_appropriations.expense_sub_type_id',
+            'tran_appropriations.expense_sub_sub_type_id'
+        );
 
         $totals = $query->get();
         $details = $detail->get();
 
-        $rows = $totals->map(function ($o) use ($details) {
-            $d = $details->first(fn($d) =>
-                $d->expense_class_id == $o->expense_class_id &&
-                $d->expense_type_id == $o->expense_type_id &&
-                $d->expense_item_id == $o->expense_item_id
-            );
+        $flatRows = $totals->map(function ($o) use ($details) {
 
-            $details_amount = $d->details_amount ?? 0;
+            $d = $details->first(function ($d) use ($o) {
+                return $d->expense_class_id == $o->expense_class_id &&
+                    $d->expense_type_id == $o->expense_type_id &&
+                    $d->expense_item_id == $o->expense_item_id &&
+                    $d->expense_sub_item_id == $o->expense_sub_item_id &&
+                    $d->expense_sub_type_id == $o->expense_sub_type_id &&
+                    $d->expense_sub_sub_type_id == $o->expense_sub_sub_type_id;
+            });
+
+            $detailsAmount = (float) ($d->details_amount ?? 0);
+            $totalAmount = (float) $o->total_amount;
+            $remainingAmount = $totalAmount - $detailsAmount;
 
             return [
                 'id' => $o->id,
+
                 'year' => $o->expenseClass?->fiscalYear?->year,
+
                 'expenseClass' => $o->expenseClass?->name,
                 'expenseType' => $o->expenseType?->name,
                 'expenseItem' => $o->expenseItem?->name,
                 'expenseSubItem' => $o->expenseSubItem?->name,
-                'total_amount' => (float) $o->total_amount,
-                'details_amount' => (float) $details_amount,
-                'remaining_amount' => (float) $o->total_amount - (float) $details_amount,
-                // Add subitems array for frontend display
-                'subItems' => $o->subItems ?? [],
+                'expenseSubType' => $o->expenseSubType?->name,
+                'expenseSubSubType' => $o->expenseSubSubType?->name,
+
+                'expense_class_id' => $o->expense_class_id,
+                'expense_type_id' => $o->expense_type_id,
+                'expense_item_id' => $o->expense_item_id,
+                'expense_sub_item_id' => $o->expense_sub_item_id,
+                'expense_sub_type_id' => $o->expense_sub_type_id,
+                'expense_sub_sub_type_id' => $o->expense_sub_sub_type_id,
+
+                'total_amount' => $totalAmount,
+                'details_amount' => $detailsAmount,
+                'remaining_amount' => $remainingAmount,
             ];
         })
-        ->filter(fn($row) => $row['remaining_amount'] != 0)
-        ->values()
-        ->toArray();
+        ->filter(function ($row) {
+            return $row['remaining_amount'] != 0;
+        })
+        ->values();
+
+        $rows = [];
+
+        foreach ($flatRows as $row) {
+
+            $classId = $row['expense_class_id'];
+            $typeId = $row['expense_type_id'];
+            $itemId = $row['expense_item_id'];
+            $subItemId = $row['expense_sub_item_id'];
+            $subTypeId = $row['expense_sub_type_id'];
+            $subSubTypeId = $row['expense_sub_sub_type_id'];
+
+            //EXPENSE CLASS
+            if (!isset($rows[$classId])) {
+                $rows[$classId] = [
+                    'id' => $row['id'],
+                    'year' => $row['year'],
+                    'expenseClass' => $row['expenseClass'],
+                    'expense_class_id' => $classId,
+                    'remaining_amount' => 0,
+                    'subItems' => [],
+                ];
+            }
+
+            //EXPENSE TYPE
+            $typeKey = $typeId ?? 'null';
+
+            if (!isset($rows[$classId]['subItems'][$typeKey])) {
+                $rows[$classId]['subItems'][$typeKey] = [
+                    'id' => $typeId,
+                    'name' => $row['expenseType'],
+                    'expense_type_id' => $typeId,
+                    'remaining_amount' => 0,
+                    'items' => [],
+                ];
+            }
+
+            //EXPENSE ITEM
+            $itemKey = $itemId ?? 'null';
+
+            if (!isset(
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]
+            )) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey] = [
+                    'id' => $itemId,
+                    'name' => $row['expenseItem'],
+                    'expense_item_id' => $itemId,
+                    'remaining_amount' => 0,
+                    'subItems' => [],
+                ];
+            }
+
+            //SUB ITEM
+            $subItemKey = $subItemId ?? 'null';
+
+            if (
+                $subItemId !== null &&
+                !isset(
+                    $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey]
+                )
+            ) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey] = [
+                    'id' => $subItemId,
+                    'name' => $row['expenseSubItem'],
+                    'expense_sub_item_id' => $subItemId,
+                    'remaining_amount' => 0,
+                    'subTypes' => [],
+                ];
+            }
+
+            //If this appropriation is directly at ITEM level, put its balance on the item.
+            if (
+                $subItemId === null &&
+                $subTypeId === null &&
+                $subSubTypeId === null
+            ) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['remaining_amount']
+                    += $row['remaining_amount'];
+
+                continue;
+            }
+
+            //SUB TYPE
+            $subTypeKey = $subTypeId ?? 'null';
+
+            if (
+                $subItemId !== null &&
+                $subTypeId !== null &&
+                !isset(
+                    $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey]['subTypes'][$subTypeKey]
+                )
+            ) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey]['subTypes'][$subTypeKey] = [
+                    'id' => $subTypeId,
+                    'name' => $row['expenseSubType'],
+                    'expense_sub_type_id' => $subTypeId,
+                    'remaining_amount' => 0,
+                    'subSubTypes' => [],
+                ];
+            }
+
+            //If this appropriation is directly at SUB ITEM level.
+            if (
+                $subItemId !== null &&
+                $subTypeId === null &&
+                $subSubTypeId === null
+            ) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey]['remaining_amount']
+                    += $row['remaining_amount'];
+
+                continue;
+            }
+
+            //SUB SUB TYPE
+            if (
+                $subItemId !== null &&
+                $subTypeId !== null &&
+                $subSubTypeId !== null
+            ) {
+                $rows[$classId]['subItems'][$typeKey]['items'][$itemKey]['subItems'][$subItemKey]['subTypes'][$subTypeKey]['subSubTypes'][$subSubTypeId] = [
+                    'id' => $subSubTypeId,
+                    'name' => $row['expenseSubSubType'],
+                    'expense_sub_sub_type_id' => $subSubTypeId,
+                    'remaining_amount' => $row['remaining_amount'],
+                ];
+            }
+        }
+
+        //Convert associative arrays into normal JSON arrays.
+        $rows = collect($rows)
+            ->map(function ($class) {
+
+                $class['subItems'] = collect($class['subItems'])
+                    ->map(function ($type) {
+
+                        $type['items'] = collect($type['items'])
+                            ->map(function ($item) {
+
+                                $item['subItems'] = collect($item['subItems'])
+                                    ->map(function ($subItem) {
+
+                                        $subItem['subTypes'] = collect($subItem['subTypes'])
+                                            ->map(function ($subType) {
+
+                                                $subType['subSubTypes'] = collect(
+                                                    $subType['subSubTypes']
+                                                )->values()->toArray();
+
+                                                return $subType;
+                                            })
+                                            ->values()
+                                            ->toArray();
+
+                                        return $subItem;
+                                    })
+                                    ->values()
+                                    ->toArray();
+
+                                return $item;
+                            })
+                            ->values()
+                            ->toArray();
+
+                        return $type;
+                    })
+                    ->values()
+                    ->toArray();
+
+                return $class;
+            })
+            ->values()
+            ->toArray();
 
         return response()->json([
             'rows' => $rows,
         ]);
     }
 
-    /**
-     * Store a new continuing appropriation
-     */
+    //Store a new continuing appropriation
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -172,19 +413,40 @@ class ContinuingAppropriationController extends Controller
         }
     }
 
-    /**
-     * Get continued accounts available for disbursement
-     */
+    //Get continued accounts available for disbursement
     public function getContinuedAccountsForDisbursement(Request $request)
     {
         try {
             $user = $request->user();
-            // Get all continuing appropriation accounts that are active and have remaining balance
+
             $continuedAccounts = ContApproAccounts::with([
                 'transactionAppropriation.expenseClass.fiscalYear',
                 'transactionAppropriation.expenseType',
-                'transactionAppropriation.expenseItem.childItems'
+
+                // Expense Item → Sub Items → Sub Types → Sub Sub Types
+                'transactionAppropriation.expenseItem.subItems' => function ($query) {
+                    $query->with([
+                        'subTypes' => function ($query) {
+                            $query->with('subSubTypes');
+                        },
+                    ]);
+                },
+
+                // Direct Sub Item allocation
+                'transactionAppropriation.expenseSubItem' => function ($query) {
+                    $query->with([
+                        'subTypes' => function ($query) {
+                            $query->with('subSubTypes');
+                        },
+                    ]);
+                },
+
+                // Direct Sub Type allocation
+                'transactionAppropriation.expenseSubType.subSubTypes',
+
+                'continuingAppropriation',
             ])
+
             ->whereHas('continuingAppropriation', function ($query) use ($user) {
                 $query->where('status', 'committed');
 
@@ -196,61 +458,186 @@ class ContinuingAppropriationController extends Controller
             ->where('current_amount', '>', 0)
             ->get()
             ->map(function ($account) {
+
                 $tranApp = $account->transactionAppropriation;
 
-                // Get sub-items for this expense item
-                $subItems = $tranApp->expenseItem?->childItems ?? collect();
+                if (!$tranApp) {
+                    return null;
+                }
 
-                $result = [
+                /*
+                * Determine the hierarchy starting from the allocation itself.
+                *
+                * If the appropriation points directly to a sub-item,
+                * use that sub-item.
+                *
+                * Otherwise, if it points to an item, load all of its
+                * sub-items.
+                */
+
+                $subItems = collect();
+
+                if ($tranApp->expenseSubItem) {
+                    $subItems = collect([$tranApp->expenseSubItem]);
+                } elseif ($tranApp->expenseItem) {
+                    $subItems = $tranApp->expenseItem->subItems ?? collect();
+                }
+
+                $nestedSubItems = $subItems->map(function ($subItem) {
+
+                    $subTypes = $subItem->subTypes ?? collect();
+
+                    return [
+                        'id' => $subItem->id,
+                        'name' => $subItem->name,
+                        'order' => $subItem->order,
+
+                        'subTypes' => $subTypes
+                            ->map(function ($subType) {
+
+                                $subSubTypes = $subType->subSubTypes ?? collect();
+
+                                return [
+                                    'id' => $subType->id,
+                                    'name' => $subType->name,
+                                    'order' => $subType->order,
+
+                                    'subSubTypes' => $subSubTypes
+                                        ->map(function ($subSubType) {
+                                            return [
+                                                'id' => $subSubType->id,
+                                                'name' => $subSubType->name,
+                                                'order' => $subSubType->order,
+                                            ];
+                                        })
+                                        ->sortBy('order')
+                                        ->values()
+                                        ->toArray(),
+                                ];
+                            })
+                            ->sortBy('order')
+                            ->values()
+                            ->toArray(),
+                    ];
+                })
+                ->sortBy('order')
+                ->values()
+                ->toArray();
+
+                /*
+                * If the actual appropriation is already at a sub-type level,
+                * make sure its parent hierarchy is represented.
+                */
+                if ($tranApp->expenseSubType) {
+
+                    $subType = $tranApp->expenseSubType;
+
+                    $parentSubItem = $subType->subItem;
+
+                    if ($parentSubItem) {
+                        $existingSubItem = collect($nestedSubItems)
+                            ->firstWhere('id', $parentSubItem->id);
+
+                        if (!$existingSubItem) {
+                            $nestedSubItems[] = [
+                                'id' => $parentSubItem->id,
+                                'name' => $parentSubItem->name,
+                                'order' => $parentSubItem->order,
+                                'subTypes' => [
+                                    [
+                                        'id' => $subType->id,
+                                        'name' => $subType->name,
+                                        'order' => $subType->order,
+                                        'subSubTypes' => $subType->subSubTypes
+                                            ->map(function ($subSubType) {
+                                                return [
+                                                    'id' => $subSubType->id,
+                                                    'name' => $subSubType->name,
+                                                    'order' => $subSubType->order,
+                                                ];
+                                            })
+                                            ->sortBy('order')
+                                            ->values()
+                                            ->toArray(),
+                                    ],
+                                ],
+                            ];
+                        }
+                    }
+                }
+
+                return [
                     'id' => $account->id,
                     'tranAppropriationId' => $tranApp->id,
+
                     'year' => $tranApp->expenseClass?->fiscalYear?->year,
+
                     'expenseClass' => $tranApp->expenseClass?->name,
                     'expenseType' => $tranApp->expenseType?->name,
                     'expenseItem' => $tranApp->expenseItem?->name,
-                    'remaining_amount' => (float) $account->current_amount,
-                    'continuingAppropriationId' => $account->contAppropriation_id,
-                    'description' => $account->continuingAppropriation?->description ?? 'Continued from previous year',
-                    'subItems' => $subItems->map(function($subItem) {
-                        return [
-                            'id' => $subItem->id,
-                            'name' => $subItem->name,
-                            'order' => $subItem->order,
-                        ];
-                    })->toArray()
-                ];
 
-                return $result;
+                    'expenseSubItem' => $tranApp->expenseSubItem?->name,
+                    'expenseSubType' => $tranApp->expenseSubType?->name,
+                    'expenseSubSubType' => $tranApp->expenseSubSubType?->name,
+
+                    'balance' => (float) $account->current_amount,
+
+                    'continuingAppropriationId' =>
+                        $account->contAppropriation_id,
+
+                    'description' =>
+                        $account->continuingAppropriation?->description
+                        ?? 'Continued from previous year',
+
+                    'subItems' => $nestedSubItems,
+                ];
             })
-            ->filter(function($account) {
-                return $account['expenseClass'] && $account['expenseType'] && $account['expenseItem'];
+            ->filter(function ($account) {
+                return $account
+                    && $account['expenseClass']
+                    && $account['expenseType']
+                    && $account['expenseItem'];
             })
             ->values()
             ->toArray();
 
             return response()->json([
                 'status' => true,
-                'data' => $continuedAccounts
+                'data' => $continuedAccounts,
             ]);
 
         } catch (\Exception $e) {
+
+            \Log::error(
+                'Failed to fetch continued accounts',
+                [
+                    'message' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]
+            );
+
             return response()->json([
                 'status' => false,
-                'message' => 'Failed to fetch continued accounts: ' . $e->getMessage()
+                'message' =>
+                    'Failed to fetch continued accounts: '
+                    . $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * GET all continuing appropriations for the current barangay
-     */
+    //GET all continuing appropriations for the current barangay
     public function getContinuingAppropriations(Request $request)
     {
         try {
             $user = $request->user();
 
             $query = ContAppropriation::with([
-                'continuingAccounts.transactionAppropriation',
+                'continuingAccounts.transactionAppropriation.expenseClass',
+                'continuingAccounts.transactionAppropriation.expenseType',
+                'continuingAccounts.transactionAppropriation.expenseItem',
+                'continuingAccounts.transactionAppropriation.expenseSubItem',
+                'continuingAccounts.transactionAppropriation.expenseSubType',
+                'continuingAccounts.transactionAppropriation.expenseSubSubType',
                 'fiscalYear'
             ]);
 
@@ -292,19 +679,28 @@ class ContinuingAppropriationController extends Controller
                                 $tranApp->expenseClass?->name,
                                 $tranApp->expenseType?->name,
                                 $tranApp->expenseItem?->name,
-                                $tranApp->expenseSubItem?->name
+                                $tranApp->expenseSubItem?->name,
+                                $tranApp->expenseSubType?->name,
+                                $tranApp->expenseSubSubType?->name,
                             ];
 
                             return [
                                 'id' => $account->id,
                                 'balance' => (float) $account->current_amount,
-                                'accountName' => implode(' > ', array_filter($accountNameParts)),
+
+                                'accountName' => implode(
+                                    ' > ',
+                                    array_filter($accountNameParts)
+                                ),
+
                                 'expenseClass' => $tranApp->expenseClass?->name,
                                 'expenseType' => $tranApp->expenseType?->name,
                                 'expenseItem' => $tranApp->expenseItem?->name,
                                 'expenseSubItem' => $tranApp->expenseSubItem?->name,
-                                'subItems' => $tranApp->subItems ?? [],
+                                'expenseSubType' => $tranApp->expenseSubType?->name,
+                                'expenseSubSubType' => $tranApp->expenseSubSubType?->name,
                             ];
+
                         })
                     ];
                 });
@@ -322,9 +718,7 @@ class ContinuingAppropriationController extends Controller
         }
     }
 
-    /**
-     * Update the status of a continuing appropriation
-     */
+    //Update the status of a continuing appropriation
     public function updateStatus(Request $request, $id)
     {
         $validated = $request->validate([
@@ -365,9 +759,7 @@ class ContinuingAppropriationController extends Controller
         }
     }
 
-    /**
-     * Get allocation history for a continuing appropriation
-     */
+    //Get allocation history for a continuing appropriation
     public function getAllocationHistory(Request $request, $id)
     {
         try {
@@ -433,19 +825,33 @@ class ContinuingAppropriationController extends Controller
         }
     }
 
-    /**
-     * Commit allocations for a continuing appropriation
-     */
+    //Commit allocations for a continuing appropriation
     public function commitAllocation(Request $request, $id)
     {
         $validated = $request->validate([
             'allocations' => 'required|array',
             'allocations.*.id' => 'required',
-            'allocations.*.type' => 'required|in:type,item',
+            'allocations.*.type' =>
+                'required|in:class,type,item,sub-item,sub-type,sub-sub-type',
             'allocations.*.amount' => 'required|numeric|min:0',
-            'allocations.*.expense_class_id' => 'nullable|integer|exists:lib_expense_classes,id',
-            'allocations.*.expense_type_id' => 'nullable|integer|exists:lib_expense_types,id',
-            'allocations.*.expense_item_id' => 'nullable|integer|exists:lib_expense_items,id'
+
+            'allocations.*.expense_class_id' =>
+                'nullable|integer|exists:lib_expense_classes,id',
+
+            'allocations.*.expense_type_id' =>
+                'nullable|integer|exists:lib_expense_types,id',
+
+            'allocations.*.expense_item_id' =>
+                'nullable|integer|exists:lib_expense_items,id',
+
+            'allocations.*.expense_sub_item_id' =>
+                'nullable|integer|exists:lib_expense_sub_items,id',
+
+            'allocations.*.expense_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_types,id',
+
+            'allocations.*.expense_sub_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_sub_types,id',
         ]);
 
         try {
@@ -496,12 +902,17 @@ class ContinuingAppropriationController extends Controller
                     // Create new allocation
                     TranAppropriation::create([
                         'barangay_id' => $request->user()->barangay_id,
-                        'budget_id' => null, // Continuing appropriations don't have a budget_id
-                        'cont_appropriation_id' => $continuingAppropriation->id, // Link to specific continuing appropriation
+                        'budget_id' => null,
+                        'cont_appropriation_id' => $continuingAppropriation->id,
+
                         'expense_class_id' => $allocation['expense_class_id'] ?? null,
                         'expense_type_id' => $allocation['expense_type_id'] ?? null,
                         'expense_item_id' => $allocation['expense_item_id'] ?? null,
+
                         'expense_sub_item_id' => $allocation['expense_sub_item_id'] ?? null,
+                        'expense_sub_type_id' => $allocation['expense_sub_type_id'] ?? null,
+                        'expense_sub_sub_type_id' => $allocation['expense_sub_sub_type_id'] ?? null,
+
                         'amount' => $allocation['amount'],
                         'transaction_date' => now(),
                         'status' => 'committed',
@@ -543,9 +954,7 @@ class ContinuingAppropriationController extends Controller
         }
     }
 
-    /**
-     * Create a new budget without initial appropriations
-     */
+    //Create a new budget without initial appropriations
     public function storeBudget(Request $request)
     {
         $validated = $request->validate([

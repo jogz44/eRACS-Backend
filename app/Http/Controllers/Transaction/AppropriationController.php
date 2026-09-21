@@ -31,10 +31,10 @@ class AppropriationController extends Controller
 
         // Get base query
         $query = Budget::with(['tranAppropriations.expenseType', 'fiscalYear', 'barangay']);
-        
+
         // Check if user is admin (from admin guard) or barangay user with admin role
         $isAdmin = false;
-        
+
         // Try to get admin user first
         try {
             $adminUser = $request->user('admin');
@@ -48,7 +48,7 @@ class AppropriationController extends Controller
                 $isAdmin = true;
             }
         }
-        
+
         // Filter by barangay - admin can view all, regular users only see their barangay
         if ($request->barangay_id && $isAdmin) {
             // Admin can filter by specific barangay
@@ -86,7 +86,7 @@ class AppropriationController extends Controller
             ->get()
             ->map(function($budget) {
                 $hasAllocations = $budget->tranAppropriations->isNotEmpty();
-                
+
                 // Calculate total available budget (original + augmentation)
                 $totalAvailable = (float)$budget->original_amount + (float)$budget->augmentation;
 
@@ -133,7 +133,7 @@ class AppropriationController extends Controller
                     // For annual budgets, unappropriated = current_amount (reflects actual available funds)
                     $unappropriated = (float)$budget->current_amount;
                 }
-                
+
 
 
                 return [
@@ -182,7 +182,7 @@ class AppropriationController extends Controller
 
         // Get base query - admin can see all barangays
         $query = Budget::with(['tranAppropriations.expenseType', 'fiscalYear', 'barangay']);
-        
+
         // Filter by specific barangay if requested
         if ($request->barangay_id) {
             $query->where('barangay_id', $request->barangay_id);
@@ -213,7 +213,7 @@ class AppropriationController extends Controller
             ->get()
             ->map(function($budget) {
                 $hasAllocations = $budget->tranAppropriations->isNotEmpty();
-                
+
                 // Calculate total available budget (original + augmentation)
                 $totalAvailable = (float)$budget->original_amount + (float)$budget->augmentation;
 
@@ -249,10 +249,10 @@ class AppropriationController extends Controller
                         $totalAppropriated += $appropriation->amount;
                     }
                 }
-                
+
                 // Calculate unappropriated amount based on budget type
                 $isSupplemental = str_contains(strtolower($budget->description), 'supplemental');
-                
+
                 if ($isSupplemental) {
                     // For supplemental budgets, unappropriated = current_amount (reflects actual available funds after allocations)
                     $unappropriated = (float)$budget->current_amount;
@@ -349,32 +349,37 @@ class AppropriationController extends Controller
             'year' => 'nullable|integer|min:2000|max:2100',
             'budget_id' => 'nullable|exists:budgets,id',
             'barangay_id' => 'nullable|exists:barangays,id',
-            'budget_type' => 'nullable|in:annual,supplemental,all'
+            'budget_type' => 'nullable|in:annual,supplemental,all',
         ]);
 
-        // Allow admin to specify barangay_id; fallback to authenticated user's barangay
-        $barangayId = $request->input('barangay_id') ?: optional($request->user())->barangay_id;
-        $budgetId = $request->budget_id;
+        // Allow admin to specify barangay_id;
+        // fallback to authenticated user's barangay
+        $barangayId = $request->input('barangay_id')
+            ?: optional($request->user())->barangay_id;
+
+        $budgetId = $request->input('budget_id');
         $year = $request->input('year');
         $fiscalYearId = $request->input('fiscal_year_id');
         $budgetType = $request->input('budget_type', 'all');
 
-        // Determine fiscal year ID from year if not provided
+        //Determine Fiscal Year
         if (!$fiscalYearId && $year) {
             $fiscalYear = LibFiscalYear::where('barangay_id', $barangayId)
                 ->where('year', $year)
                 ->first();
+
             if ($fiscalYear) {
                 $fiscalYearId = $fiscalYear->id;
             }
         }
 
-        // If still no fiscal year ID, use current year
         if (!$fiscalYearId) {
             $currentYear = now()->year;
+
             $fiscalYear = LibFiscalYear::where('barangay_id', $barangayId)
                 ->where('year', $currentYear)
                 ->first();
+
             if ($fiscalYear) {
                 $fiscalYearId = $fiscalYear->id;
             }
@@ -383,92 +388,88 @@ class AppropriationController extends Controller
         if (!$fiscalYearId) {
             return response()->json([
                 'status' => false,
-                'message' => 'No fiscal year found for the specified criteria'
+                'message' => 'No fiscal year found for the specified criteria',
             ], 400);
         }
 
-        // First, get the budget IDs that match the budget type filter
+        //Determine Budget IDs for Budget Type Filter
         $budgetIds = [];
+
         if ($budgetType !== 'all') {
-            $budgetQuery = Budget::where('barangay_id', $barangayId);
-            if ($fiscalYearId) {
-                $budgetQuery->where('fiscal_year_id', $fiscalYearId);
-            }
-            
+            $budgetQuery = Budget::where('barangay_id', $barangayId)
+                ->where('fiscal_year_id', $fiscalYearId);
+
             if ($budgetType === 'annual') {
-                $budgetQuery->where('description', 'like', '%annual%');
+                $budgetQuery->where(
+                    'description',
+                    'like',
+                    '%annual%'
+                );
             } elseif ($budgetType === 'supplemental') {
-                $budgetQuery->where('description', 'like', '%supplemental%');
+                $budgetQuery->where(
+                    'description',
+                    'like',
+                    '%supplemental%'
+                );
             }
-            
-            $budgetIds = $budgetQuery->pluck('id')->toArray();
+
+            $budgetIds = $budgetQuery
+                ->pluck('id')
+                ->toArray();
         }
 
-        $classes = LibExpenseClass::with(['types.items' => function($query) {
-            $query->with(['childItems'])->whereNull('parent_item_id'); // Only load root items, not sub-items
-        }])
+        //Load COMPLETE Accounts Library Hierarchy
+        $classes = LibExpenseClass::with([
+            'types.items.subItems.subTypes.subSubTypes',
+        ])
             ->where('fiscal_year_id', $fiscalYearId)
             ->orderBy('order')
             ->get()
-            ->map(function($class) use ($barangayId, $budgetId, $budgetIds, $budgetType) {
-                // Calculate allocated amount for this expense class
-                $classQuery = TranAppropriation::where('barangay_id', $barangayId)
-                    ->where('expense_class_id', $class->id)
-                    ->where('status', 'committed');
+            ->map(function ($class) use (
+                $barangayId,
+                $budgetId,
+                $budgetIds,
+                $budgetType
+            ) {
+
+                //EXPENSE CLASS
+                $classQuery = TranAppropriation::where(
+                    'barangay_id',
+                    $barangayId
+                )
+                    ->where(
+                        'expense_class_id',
+                        $class->id
+                    )
+                    ->where(
+                        'status',
+                        'committed'
+                    );
 
                 if ($budgetId) {
-                    $classQuery->where('budget_id', $budgetId);
-                } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
-                    $classQuery->whereIn('budget_id', $budgetIds);
+                    $classQuery->where(
+                        'budget_id',
+                        $budgetId
+                    );
+                } elseif (
+                    $budgetType !== 'all'
+                    && !empty($budgetIds)
+                ) {
+                    $classQuery->whereIn(
+                        'budget_id',
+                        $budgetIds
+                    );
                 }
 
                 $classAllocatedAmount = $classQuery->sum('amount');
 
-                // Get budget source information for expense class
-                $classBudgetSource = 'Annual Budget'; // Default
-                if ($budgetType === 'annual') {
-                    $classBudgetSource = 'Annual Budget';
-                } elseif ($budgetType === 'supplemental') {
-                    $classBudgetSource = 'Supplemental Budget';
-                } else {
-                    // For 'all', determine based on the budgets that have allocations
-                    if ($budgetId) {
-                        $budget = Budget::find($budgetId);
-                        if ($budget && $budget->description) {
-                            $description = strtolower($budget->description);
-                            if (strpos($description, 'supplemental') !== false) {
-                                $classBudgetSource = 'Supplemental Budget';
-                            } elseif (strpos($description, 'annual') !== false) {
-                                $classBudgetSource = 'Annual Budget';
-                            }
-                        }
-                    } else {
-                        // Check if there are multiple budgets with different sources
-                        $budgets = Budget::whereHas('tranAppropriations', function($q) use ($barangayId, $class) {
-                            $q->where('barangay_id', $barangayId)
-                              ->where('expense_class_id', $class->id)
-                              ->where('status', 'committed');
-                        })->get();
-                        
-                        if ($budgets->count() > 0) {
-                            $hasSupplemental = $budgets->filter(function($budget) {
-                                return strpos(strtolower($budget->description), 'supplemental') !== false;
-                            })->count() > 0;
-                            
-                            $hasAnnual = $budgets->filter(function($budget) {
-                                return strpos(strtolower($budget->description), 'annual') !== false;
-                            })->count() > 0;
-                            
-                            if ($hasSupplemental && $hasAnnual) {
-                                $classBudgetSource = 'Mixed';
-                            } elseif ($hasSupplemental) {
-                                $classBudgetSource = 'Supplemental Budget';
-                            } elseif ($hasAnnual) {
-                                $classBudgetSource = 'Annual Budget';
-                            }
-                        }
-                    }
-                }
+                $classBudgetSource = $this->getHierarchyBudgetSource(
+                    $budgetType,
+                    $budgetId,
+                    $barangayId,
+                    'expense_class_id',
+                    $class->id
+                );
 
                 return [
                     'id' => $class->id,
@@ -476,478 +477,617 @@ class AppropriationController extends Controller
                     'isMainCategory' => true,
                     'amount' => (float) $classAllocatedAmount,
                     'budget_source' => $classBudgetSource,
-                    'children' => $class->types->map(function($type) use ($barangayId, $budgetId, $budgetIds, $budgetType) {
-                        // Calculate allocated amount for this expense type
-                        $typeQuery = TranAppropriation::where('barangay_id', $barangayId)
-                            ->where('expense_type_id', $type->id)
-                            ->where('status', 'committed');
 
-                        if ($budgetId) {
-                            $typeQuery->where('budget_id', $budgetId);
-                        } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
-                            $typeQuery->whereIn('budget_id', $budgetIds);
-                        }
+                    //EXPENSE TYPES
+                    'children' => $class->types
+                        ->map(function ($type) use (
+                            $barangayId,
+                            $budgetId,
+                            $budgetIds,
+                            $budgetType
+                        ) {
 
-                        $typeAllocatedAmount = $typeQuery->sum('amount');
+                            $typeQuery = TranAppropriation::where(
+                                'barangay_id',
+                                $barangayId
+                            )
+                                ->where(
+                                    'expense_type_id',
+                                    $type->id
+                                )
+                                ->where(
+                                    'status',
+                                    'committed'
+                                );
 
-                        // Get budget source information for expense type
-                        $typeBudgetSource = 'Annual Budget'; // Default
-                        if ($budgetType === 'annual') {
-                            $typeBudgetSource = 'Annual Budget';
-                        } elseif ($budgetType === 'supplemental') {
-                            $typeBudgetSource = 'Supplemental Budget';
-                        } else {
-                            // For 'all', determine based on the budgets that have allocations
                             if ($budgetId) {
-                                $budget = Budget::find($budgetId);
-                                if ($budget && $budget->description) {
-                                    $description = strtolower($budget->description);
-                                    if (strpos($description, 'supplemental') !== false) {
-                                        $typeBudgetSource = 'Supplemental Budget';
-                                    } elseif (strpos($description, 'annual') !== false) {
-                                        $typeBudgetSource = 'Annual Budget';
-                                    }
-                                }
-                            } else {
-                                // Check if there are multiple budgets with different sources
-                                $budgets = Budget::whereHas('tranAppropriations', function($q) use ($barangayId, $type) {
-                                    $q->where('barangay_id', $barangayId)
-                                      ->where('expense_type_id', $type->id)
-                                      ->where('status', 'committed');
-                                })->get();
-                                
-                                if ($budgets->count() > 0) {
-                                    $hasSupplemental = $budgets->filter(function($budget) {
-                                        return strpos(strtolower($budget->description), 'supplemental') !== false;
-                                    })->count() > 0;
-                                    
-                                    $hasAnnual = $budgets->filter(function($budget) {
-                                        return strpos(strtolower($budget->description), 'annual') !== false;
-                                    })->count() > 0;
-                                    
-                                    if ($hasSupplemental && $hasAnnual) {
-                                        $typeBudgetSource = 'Mixed';
-                                    } elseif ($hasSupplemental) {
-                                        $typeBudgetSource = 'Supplemental Budget';
-                                    } elseif ($hasAnnual) {
-                                        $typeBudgetSource = 'Annual Budget';
-                                    }
-                                }
+                                $typeQuery->where(
+                                    'budget_id',
+                                    $budgetId
+                                );
+                            } elseif (
+                                $budgetType !== 'all'
+                                && !empty($budgetIds)
+                            ) {
+                                $typeQuery->whereIn(
+                                    'budget_id',
+                                    $budgetIds
+                                );
                             }
-                        }
 
-                        return [
-                            'id' => $type->id,
-                            'name' => $type->name,
-                            'isMainCategory' => false,
-                            'amount' => (float) $typeAllocatedAmount,
-                            'budget_source' => $typeBudgetSource,
-                            'children' => $type->items->map(function($item) use ($barangayId, $budgetId, $budgetIds, $budgetType) {
-                                // Get the allocated amount for this expense item
-                                $query = TranAppropriation::where('barangay_id', $barangayId)
-                                    ->where('expense_item_id', $item->id)
-                                    ->where('status', 'committed');
+                            $typeAllocatedAmount = $typeQuery->sum('amount');
 
-                                // If budget_id is provided, filter by that specific budget
-                                if ($budgetId) {
-                                    $query->where('budget_id', $budgetId);
-                                } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
-                                    $query->whereIn('budget_id', $budgetIds);
-                                }
+                            $typeBudgetSource = $this->getHierarchyBudgetSource(
+                                $budgetType,
+                                $budgetId,
+                                $barangayId,
+                                'expense_type_id',
+                                $type->id
+                            );
 
-                                $allocatedAmount = $query->sum('amount');
+                            return [
+                                'id' => $type->id,
+                                'name' => $type->name,
+                                'isMainCategory' => false,
+                                'amount' => (float) $typeAllocatedAmount,
+                                'budget_source' => $typeBudgetSource,
 
-                                // Get budget source information from the budget description
-                                $budgetSource = 'Annual Budget'; // Default
-                                if ($budgetType === 'annual') {
-                                    $budgetSource = 'Annual Budget';
-                                } elseif ($budgetType === 'supplemental') {
-                                    $budgetSource = 'Supplemental Budget';
-                                } else {
-                                    // For 'all', determine based on the budgets that have allocations
-                                    if ($budgetId) {
-                                        $budget = Budget::find($budgetId);
-                                        if ($budget && $budget->description) {
-                                            $description = strtolower($budget->description);
-                                            if (strpos($description, 'supplemental') !== false) {
-                                                $budgetSource = 'Supplemental Budget';
-                                            } elseif (strpos($description, 'annual') !== false) {
-                                                $budgetSource = 'Annual Budget';
-                                            }
-                                        }
-                                    } else {
-                                        // Check if there are multiple budgets with different sources
-                                        $budgets = Budget::whereHas('tranAppropriations', function($q) use ($barangayId, $item) {
-                                            $q->where('barangay_id', $barangayId)
-                                              ->where('expense_item_id', $item->id)
-                                              ->where('status', 'committed');
-                                        })->get();
+                                //EXPENSE ITEMS
+                                'children' => $type->items
+                                    ->map(function ($item) use (
+                                        $barangayId,
+                                        $budgetId,
+                                        $budgetIds,
+                                        $budgetType
+                                    ) {
 
-                                        if ($budgets->count() > 0) {
-                                            $hasSupplemental = $budgets->filter(function($budget) {
-                                                return strpos(strtolower($budget->description), 'supplemental') !== false;
-                                            })->count() > 0;
+                                        $itemQuery = TranAppropriation::where(
+                                            'barangay_id',
+                                            $barangayId
+                                        )
+                                            ->where(
+                                                'expense_item_id',
+                                                $item->id
+                                            )
+                                            ->where(
+                                                'status',
+                                                'committed'
+                                            );
 
-                                            $hasAnnual = $budgets->filter(function($budget) {
-                                                return strpos(strtolower($budget->description), 'annual') !== false;
-                                            })->count() > 0;
-
-                                            if ($hasSupplemental && $hasAnnual) {
-                                                $budgetSource = 'Mixed';
-                                            } elseif ($hasSupplemental) {
-                                                $budgetSource = 'Supplemental Budget';
-                                            } elseif ($hasAnnual) {
-                                                $budgetSource = 'Annual Budget';
-                                            }
-                                        }
-                                    }
-                                }
-
-                                return [
-                                    'id' => $item->id,
-                                    'name' => $item->name,
-                                    'isMainCategory' => false,
-                                    'amount' => (float) $allocatedAmount,
-                                    'budget_source' => $budgetSource,
-                                    'children' => $item->childItems->map(function($subItem) use ($barangayId, $budgetId, $budgetIds, $budgetType) {
-                                        // Get the allocated amount for this expense sub-item
-                                        $subQuery = TranAppropriation::where('barangay_id', $barangayId)
-                                            ->where('expense_sub_item_id', $subItem->id)
-                                            ->where('status', 'committed');
-
-                                        // If budget_id is provided, filter by that specific budget
                                         if ($budgetId) {
-                                            $subQuery->where('budget_id', $budgetId);
-                                        } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
-                                            $subQuery->whereIn('budget_id', $budgetIds);
+                                            $itemQuery->where(
+                                                'budget_id',
+                                                $budgetId
+                                            );
+                                        } elseif (
+                                            $budgetType !== 'all'
+                                            && !empty($budgetIds)
+                                        ) {
+                                            $itemQuery->whereIn(
+                                                'budget_id',
+                                                $budgetIds
+                                            );
                                         }
 
-                                        $subAllocatedAmount = $subQuery->sum('amount');
+                                        $itemAllocatedAmount =
+                                            $itemQuery->sum('amount');
 
-                                        // Get budget source information from the budget description
-                                        $subBudgetSource = 'Annual Budget'; // Default
-                                        if ($budgetType === 'annual') {
-                                            $subBudgetSource = 'Annual Budget';
-                                        } elseif ($budgetType === 'supplemental') {
-                                            $subBudgetSource = 'Supplemental Budget';
-                                        } else {
-                                            // For 'all', determine based on the budgets that have allocations
-                                            if ($budgetId) {
-                                                $budget = Budget::find($budgetId);
-                                                if ($budget && $budget->description) {
-                                                    $description = strtolower($budget->description);
-                                                    if (strpos($description, 'supplemental') !== false) {
-                                                        $subBudgetSource = 'Supplemental Budget';
-                                                    } elseif (strpos($description, 'annual') !== false) {
-                                                        $subBudgetSource = 'Annual Budget';
-                                                    }
-                                                }
-                                            } else {
-                                                // Check if there are multiple budgets with different sources
-                                                $subBudgets = Budget::whereHas('tranAppropriations', function($q) use ($barangayId, $subItem) {
-                                                    $q->where('barangay_id', $barangayId)
-                                                      ->where('expense_sub_item_id', $subItem->id)
-                                                      ->where('status', 'committed');
-                                                })->get();
-
-                                                if ($subBudgets->count() > 0) {
-                                                    $hasSupplemental = $subBudgets->filter(function($budget) {
-                                                        return strpos(strtolower($budget->description), 'supplemental') !== false;
-                                                    })->count() > 0;
-
-                                                    $hasAnnual = $subBudgets->filter(function($budget) {
-                                                        return strpos(strtolower($budget->description), 'annual') !== false;
-                                                    })->count() > 0;
-
-                                                    if ($hasSupplemental && $hasAnnual) {
-                                                        $subBudgetSource = 'Mixed';
-                                                    } elseif ($hasSupplemental) {
-                                                        $subBudgetSource = 'Supplemental Budget';
-                                                    } elseif ($hasAnnual) {
-                                                        $subBudgetSource = 'Annual Budget';
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        $itemBudgetSource =
+                                            $this->getHierarchyBudgetSource(
+                                                $budgetType,
+                                                $budgetId,
+                                                $barangayId,
+                                                'expense_item_id',
+                                                $item->id
+                                            );
 
                                         return [
-                                            'id' => $subItem->id,
-                                            'name' => $subItem->name,
+                                            'id' => $item->id,
+                                            'name' => $item->name,
                                             'isMainCategory' => false,
-                                            'amount' => (float) $subAllocatedAmount,
-                                            'budget_source' => $subBudgetSource
+                                            'amount' => (float) $itemAllocatedAmount,
+                                            'budget_source' => $itemBudgetSource,
+
+                                            //EXPENSE SUB ITEMS
+                                            'children' => $item->subItems
+                                                ->map(function ($subItem) use (
+                                                    $barangayId,
+                                                    $budgetId,
+                                                    $budgetIds,
+                                                    $budgetType
+                                                ) {
+
+                                                    $subItemQuery =
+                                                        TranAppropriation::where(
+                                                            'barangay_id',
+                                                            $barangayId
+                                                        )
+                                                            ->where(
+                                                                'expense_sub_item_id',
+                                                                $subItem->id
+                                                            )
+                                                            ->where(
+                                                                'status',
+                                                                'committed'
+                                                            );
+
+                                                    if ($budgetId) {
+                                                        $subItemQuery->where(
+                                                            'budget_id',
+                                                            $budgetId
+                                                        );
+                                                    } elseif (
+                                                        $budgetType !== 'all'
+                                                        && !empty($budgetIds)
+                                                    ) {
+                                                        $subItemQuery->whereIn(
+                                                            'budget_id',
+                                                            $budgetIds
+                                                        );
+                                                    }
+
+                                                    $subItemAllocatedAmount =
+                                                        $subItemQuery->sum('amount');
+
+                                                    $subItemBudgetSource =
+                                                        $this->getHierarchyBudgetSource(
+                                                            $budgetType,
+                                                            $budgetId,
+                                                            $barangayId,
+                                                            'expense_sub_item_id',
+                                                            $subItem->id
+                                                        );
+
+                                                    return [
+                                                        'id' => $subItem->id,
+                                                        'name' => $subItem->name,
+                                                        'isMainCategory' => false,
+                                                        'amount' => (float) $subItemAllocatedAmount,
+                                                        'budget_source' => $subItemBudgetSource,
+
+                                                        //EXPENSE SUB TYPES
+                                                        'children' => $subItem->subTypes
+                                                            ->map(function ($subType) use (
+                                                                $barangayId,
+                                                                $budgetId,
+                                                                $budgetIds,
+                                                                $budgetType
+                                                            ) {
+
+                                                                $subTypeQuery =
+                                                                    TranAppropriation::where(
+                                                                        'barangay_id',
+                                                                        $barangayId
+                                                                    )
+                                                                        ->where(
+                                                                            'expense_sub_type_id',
+                                                                            $subType->id
+                                                                        )
+                                                                        ->where(
+                                                                            'status',
+                                                                            'committed'
+                                                                        );
+
+                                                                if ($budgetId) {
+                                                                    $subTypeQuery->where(
+                                                                        'budget_id',
+                                                                        $budgetId
+                                                                    );
+                                                                } elseif (
+                                                                    $budgetType !== 'all'
+                                                                    && !empty($budgetIds)
+                                                                ) {
+                                                                    $subTypeQuery->whereIn(
+                                                                        'budget_id',
+                                                                        $budgetIds
+                                                                    );
+                                                                }
+
+                                                                $subTypeAllocatedAmount =
+                                                                    $subTypeQuery->sum('amount');
+
+                                                                $subTypeBudgetSource =
+                                                                    $this->getHierarchyBudgetSource(
+                                                                        $budgetType,
+                                                                        $budgetId,
+                                                                        $barangayId,
+                                                                        'expense_sub_type_id',
+                                                                        $subType->id
+                                                                    );
+
+                                                                return [
+                                                                    'id' => $subType->id,
+                                                                    'name' => $subType->name,
+                                                                    'isMainCategory' => false,
+                                                                    'amount' => (float) $subTypeAllocatedAmount,
+                                                                    'budget_source' => $subTypeBudgetSource,
+
+                                                                    //EXPENSE SUB SUB TYPE
+                                                                    'children' => $subType->subSubTypes
+                                                                        ->map(function ($subSubType) use (
+                                                                            $barangayId,
+                                                                            $budgetId,
+                                                                            $budgetIds,
+                                                                            $budgetType
+                                                                        ) {
+
+                                                                            $subSubTypeQuery =
+                                                                                TranAppropriation::where(
+                                                                                    'barangay_id',
+                                                                                    $barangayId
+                                                                                )
+                                                                                    ->where(
+                                                                                        'expense_sub_sub_type_id',
+                                                                                        $subSubType->id
+                                                                                    )
+                                                                                    ->where(
+                                                                                        'status',
+                                                                                        'committed'
+                                                                                    );
+
+                                                                            if ($budgetId) {
+                                                                                $subSubTypeQuery->where(
+                                                                                    'budget_id',
+                                                                                    $budgetId
+                                                                                );
+                                                                            } elseif (
+                                                                                $budgetType !== 'all'
+                                                                                && !empty($budgetIds)
+                                                                            ) {
+                                                                                $subSubTypeQuery->whereIn(
+                                                                                    'budget_id',
+                                                                                    $budgetIds
+                                                                                );
+                                                                            }
+
+                                                                            $subSubTypeAllocatedAmount =
+                                                                                $subSubTypeQuery->sum('amount');
+
+                                                                            $subSubTypeBudgetSource =
+                                                                                $this->getHierarchyBudgetSource(
+                                                                                    $budgetType,
+                                                                                    $budgetId,
+                                                                                    $barangayId,
+                                                                                    'expense_sub_sub_type_id',
+                                                                                    $subSubType->id
+                                                                                );
+
+                                                                            return [
+                                                                                'id' => $subSubType->id,
+                                                                                'name' => $subSubType->name,
+                                                                                'isMainCategory' => false,
+                                                                                'amount' => (float) $subSubTypeAllocatedAmount,
+                                                                                'budget_source' => $subSubTypeBudgetSource,
+                                                                                'children' => [],
+                                                                            ];
+                                                                        })
+                                                                        ->values()
+                                                                        ->toArray(),
+                                                                ];
+                                                            })
+                                                            ->values()
+                                                            ->toArray(),
+                                                    ];
+                                                })
+                                                ->values()
+                                                ->toArray(),
                                         ];
                                     })
-                                ];
-                            })
-                        ];
-                    })
+                                    ->values()
+                                    ->toArray(),
+                            ];
+                        })
+                        ->values()
+                        ->toArray(),
                 ];
             });
 
         return response()->json([
             'status' => true,
-            'data' => $classes
+            'data' => $classes,
         ]);
     }
 
-    // FIXED: Save allocation from modal - this is the key fix
+    //Determine the budget source for an expense hierarchy level. Preserves the existing Annual / Supplemental / Mixed logic.
+    private function getHierarchyBudgetSource(string $budgetType, $budgetId, $barangayId, $allocationColumn, $allocationId)
+    {
+        // Explicit budget type
+        if ($budgetType === 'annual') {
+            return 'Annual Budget';
+        }
+
+        if ($budgetType === 'supplemental') {
+            return 'Supplemental Budget';
+        }
+
+        // "all" + a specific budget selected
+        if ($budgetId) {
+            $budget = Budget::find($budgetId);
+
+            if ($budget && $budget->description) {
+                $description = strtolower($budget->description);
+
+                if (strpos($description, 'supplemental') !== false) {
+                    return 'Supplemental Budget';
+                }
+
+                if (strpos($description, 'annual') !== false) {
+                    return 'Annual Budget';
+                }
+            }
+
+            return 'Annual Budget';
+        }
+
+        // "all" with no specific budget selected
+        $budgets = Budget::whereHas(
+            'tranAppropriations',
+            function ($query) use (
+                $barangayId,
+                $allocationColumn,
+                $allocationId
+            ) {
+                $query->where(
+                    'barangay_id',
+                    $barangayId
+                )
+                    ->where(
+                        $allocationColumn,
+                        $allocationId
+                    )
+                    ->where(
+                        'status',
+                        'committed'
+                    );
+            }
+        )->get();
+
+        if ($budgets->count() > 0) {
+            $hasSupplemental = $budgets->contains(function ($budget) {
+                return $budget->description &&
+                    strpos(
+                        strtolower($budget->description),
+                        'supplemental'
+                    ) !== false;
+            });
+
+            $hasAnnual = $budgets->contains(function ($budget) {
+                return $budget->description &&
+                    strpos(
+                        strtolower($budget->description),
+                        'annual'
+                    ) !== false;
+            });
+
+            if ($hasSupplemental && $hasAnnual) {
+                return 'Mixed';
+            }
+
+            if ($hasSupplemental) {
+                return 'Supplemental Budget';
+            }
+
+            if ($hasAnnual) {
+                return 'Annual Budget';
+            }
+        }
+
+        return 'Annual Budget';
+    }
+
+    // FIXED: Save allocation from modal - supports all 6 expense hierarchy levels
     public function saveAllocation(Request $request, Budget $budget)
     {
-       $validated = $request->validate([
-         'allocations' => 'required|array',
-         'allocations.*.type' => 'required|in:class,type,item,sub-item',
-         'allocations.*.amount' => 'required|numeric|min:0',
-         'allocations.*.expense_class_id' => 'nullable|integer|exists:lib_expense_classes,id',
-         'allocations.*.expense_type_id' => 'nullable|integer|exists:lib_expense_types,id',
-         'allocations.*.expense_item_id' => 'nullable|integer|exists:lib_expense_items,id',
-         'allocations.*.expense_sub_item_id' => 'nullable|integer|exists:lib_expense_items,id'
-     ]);
+        $validated = $request->validate([
+            'allocations' => 'required|array',
 
-     \Log::info('SaveAllocation called with data:', [
-         'budget_id' => $budget->id,
-         'allocations_count' => count($validated['allocations']),
-         'allocations' => $validated['allocations']
-     ]);
+            // Supported allocation levels
+            'allocations.*.type' => 'required|in:class,type,item,sub-item,sub-type,sub-sub-type',
 
-    // Get existing allocations for this budget
-    $existingAllocations = TranAppropriation::where('budget_id', $budget->id)
-        ->where('barangay_id', $request->user()->barangay_id)
-        ->get();
+            // Allocation amount
+            'allocations.*.amount' => 'required|numeric|min:0',
 
-    // Calculate existing total using lowest level logic
-    $existingLowestLevel = [];
-    $existingProcessedItems = [];
-    $existingProcessedTypes = [];
-    $existingProcessedClasses = [];
-
-    foreach ($existingAllocations as $existing) {
-        if ($existing->expense_sub_item_id) {
-            $existingLowestLevel[] = $existing->amount;
-            $existingProcessedItems[] = $existing->expense_item_id;
-        } elseif ($existing->expense_item_id && !in_array($existing->expense_item_id, $existingProcessedItems)) {
-            $existingLowestLevel[] = $existing->amount;
-            $existingProcessedTypes[] = $existing->expense_type_id;
-        } elseif ($existing->expense_type_id && !in_array($existing->expense_type_id, $existingProcessedTypes)) {
-            $existingLowestLevel[] = $existing->amount;
-            $existingProcessedClasses[] = $existing->expense_class_id;
-        } elseif ($existing->expense_class_id && !in_array($existing->expense_class_id, $existingProcessedClasses)) {
-            $existingLowestLevel[] = $existing->amount;
-        }
-    }
-
-    $existingTotal = array_sum($existingLowestLevel);
-
-    \Log::info('Existing allocations before processing:', [
-        'existing_count' => $existingAllocations->count(),
-        'existing_total' => $existingTotal,
-        'existing_allocations' => $existingAllocations->map(function($alloc) {
-            return [
-                'id' => $alloc->id,
-                'amount' => $alloc->amount,
-                'expense_class_id' => $alloc->expense_class_id,
-                'expense_type_id' => $alloc->expense_type_id,
-                'expense_item_id' => $alloc->expense_item_id,
-                'expense_sub_item_id' => $alloc->expense_sub_item_id,
-                'key' => $this->getAllocationKey($alloc)
-            ];
-        })->toArray()
-    ]);
-
-    // NEW: Validate that new appropriation amounts are not less than what has already been disbursed
-    foreach ($validated['allocations'] as $allocation) {
-        // Find the existing allocation to compare amounts
-        $existingAllocation = $existingAllocations->first(function($existing) use ($allocation) {
-            return $existing->expense_class_id == ($allocation['expense_class_id'] ?? null) &&
-                   $existing->expense_type_id == ($allocation['expense_type_id'] ?? null) &&
-                   $existing->expense_item_id == ($allocation['expense_item_id'] ?? null) &&
-                   $existing->expense_sub_item_id == ($allocation['expense_sub_item_id'] ?? null);
-        });
-
-        if ($existingAllocation) {
-            // Calculate how much has been disbursed from this appropriation using TranExpenseDetail
-            $disbursedAmount = \App\Models\TranExpenseDetail::where('appropriation_id', $existingAllocation->id)
-                ->sum('amount');
-
-            // Check if the new amount is less than what has been disbursed
-            if ($allocation['amount'] < $disbursedAmount) {
-                
-                return response()->json([
-                    'status' => false,
-                    'message' => sprintf(
-                        'Cannot reduce appropriation below the disbursed amount. New amount must be at least ₱%s.',
-                        number_format($disbursedAmount, 2)
-                    )
-                ], 422);
-            }
-        }
-    }
-
-    // Calculate new total using lowest level logic
-    $newLowestLevel = [];
-    $newProcessedItems = [];
-    $newProcessedTypes = [];
-    $newProcessedClasses = [];
-
-    foreach ($validated['allocations'] as $allocation) {
-        if ($allocation['expense_sub_item_id']) {
-            $newLowestLevel[] = $allocation['amount'];
-            $newProcessedItems[] = $allocation['expense_item_id'];
-        } elseif ($allocation['expense_item_id'] && !in_array($allocation['expense_item_id'], $newProcessedItems)) {
-            $newLowestLevel[] = $allocation['amount'];
-            $newProcessedTypes[] = $allocation['expense_type_id'];
-        } elseif ($allocation['expense_type_id'] && !in_array($allocation['expense_type_id'], $newProcessedTypes)) {
-            $newLowestLevel[] = $allocation['amount'];
-            $newProcessedClasses[] = $allocation['expense_class_id'];
-        } elseif ($allocation['expense_class_id'] && !in_array($allocation['expense_class_id'], $newProcessedClasses)) {
-            $newLowestLevel[] = $allocation['amount'];
-        }
-    }
-
-    $newTotal = array_sum($newLowestLevel);
-
-    // Calculate net change (new total - existing total)
-    $netChange = $newTotal - $existingTotal;
-
-    \Log::info('Allocation validation', [
-        'budget_id' => $budget->id,
-        'budget_current_amount' => $budget->current_amount,
-        'existing_total' => $existingTotal,
-        'new_total' => $newTotal,
-        'net_change' => $netChange,
-        'allocations' => $validated['allocations']
-    ]);
-
-    // FIXED: Check net change against current_amount (available budget)
-    if ($netChange > $budget->current_amount) {
-        \Log::warning('Net change exceeds available budget', [
-            'net_change' => $netChange,
-            'available_budget' => $budget->current_amount,
-            'difference' => $netChange - $budget->current_amount
+            // Expense hierarchy IDs
+            'allocations.*.expense_class_id' => 'nullable|integer|exists:lib_expense_classes,id',
+            'allocations.*.expense_type_id' => 'nullable|integer|exists:lib_expense_types,id',
+            'allocations.*.expense_item_id' => 'nullable|integer|exists:lib_expense_items,id',
+            'allocations.*.expense_sub_item_id' => 'nullable|integer|exists:lib_expense_sub_items,id',
+            'allocations.*.expense_sub_type_id' => 'nullable|integer|exists:lib_expense_sub_types,id',
+            'allocations.*.expense_sub_sub_type_id' => 'nullable|integer|exists:lib_expense_sub_sub_types,id',
         ]);
 
-        return response()->json([
-            'status' => false,
-            'message' => sprintf(
-                'Net change exceeds available budget by ₱%s. Available: ₱%s, Net Change: ₱%s',
-                number_format($netChange - $budget->current_amount, 2),
-                number_format($budget->current_amount, 2),
-                number_format($netChange, 2)
-            )
-        ], 422);
-    }
+        \Log::info('SaveAllocation called with data:', [
+            'budget_id' => $budget->id,
+            'allocations_count' => count($validated['allocations']),
+            'allocations' => $validated['allocations']
+        ]);
 
-    return DB::transaction(function () use ($validated, $budget, $request, $netChange, $existingAllocations) {
-        $appropriations = [];
+        /*
+        |--------------------------------------------------------------------------
+        | Get existing allocations
+        |--------------------------------------------------------------------------
+        */
 
-        // Instead of deleting all existing allocations, update them intelligently
-        // This preserves the TranExpenseDetail records that are linked to appropriations
-        
-        // Create a map of existing allocations for easy lookup
-        $existingAllocationMap = [];
+        $existingAllocations = TranAppropriation::where('budget_id', $budget->id)
+            ->where('barangay_id', $request->user()->barangay_id)
+            ->where('status', 'committed')
+            ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 1
+        | Determine which hierarchy levels have deeper allocations.
+        |
+        | Example:
+        |
+        | Item
+        |   └── Sub Item
+        |         └── Sub Type
+        |               └── Sub Sub Type
+        |
+        | If a Sub Sub Type exists, its parents must not also be counted
+        | as additional allocated amounts.
+        |--------------------------------------------------------------------------
+        */
+
+        $existingProcessedSubTypes = [];
+        $existingProcessedSubItems = [];
+        $existingProcessedItems = [];
+        $existingProcessedTypes = [];
+        $existingProcessedClasses = [];
+
         foreach ($existingAllocations as $existing) {
-            $key = $this->getAllocationKey($existing);
-            $existingAllocationMap[$key] = $existing;
-        }
 
-        // Process new allocations
-        foreach ($validated['allocations'] as $allocation) {
-            $allocationKey = $this->getAllocationKey($allocation);
-            
-            \Log::info('Processing allocation:', [
-                'allocation' => $allocation,
-                'allocation_key' => $allocationKey,
-                'exists_in_map' => isset($existingAllocationMap[$allocationKey])
-            ]);
-            
-            if (isset($existingAllocationMap[$allocationKey])) {
-                // Update existing allocation
-                $existingAllocation = $existingAllocationMap[$allocationKey];
-                $previousAmount = (float) $existingAllocation->amount;
-                $existingAllocation->update([
-                    'amount' => $allocation['amount'],
-                    'transaction_date' => now(),
-                    'status' => 'committed',
-                    'user_id' => $request->user()->id,
-                ]);
-                $appropriations[] = $existingAllocation;
-                
-                // Remove from map to track which ones were updated
-                unset($existingAllocationMap[$allocationKey]);
+            if ($existing->expense_sub_sub_type_id) {
 
-                \Log::info('Updated existing allocation:', [
-                    'allocation_id' => $existingAllocation->id,
-                    'previous_amount' => $previousAmount,
-                    'new_amount' => $allocation['amount']
-                ]);
-
-                // Log edited allocation with previous vs new amount only if amount actually changed
-                if (abs($previousAmount - $allocation['amount']) > 0.01) { // Use small threshold for float comparison
-                    $identifier = $this->getExpenseIdentifier($allocation);
-                    AdminAuthController::logUserAction(
-                        $request->user(),
-                        'Edited Allocation',
-                        sprintf(
-                            'Edited allocation %s: from ₱%s to ₱%s for budget "%s"',
-                            $identifier,
-                            number_format($previousAmount, 2),
-                            number_format($allocation['amount'], 2),
-                            $budget->description
-                        )
-                    );
+                if ($existing->expense_sub_type_id) {
+                    $existingProcessedSubTypes[] = $existing->expense_sub_type_id;
                 }
-            } else {
-                // Create new allocation
-                $appropriationData = [
-                    'barangay_id' => $request->user()->barangay_id,
-                    'budget_id' => $budget->id,
-                    'amount' => $allocation['amount'],
-                    'transaction_date' => now(),
-                    'status' => 'committed',
-                    'user_id' => $request->user()->id,
-                    'expense_class_id' => $allocation['expense_class_id'] ?? null,
-                    'expense_type_id' => $allocation['expense_type_id'] ?? null,
-                    'expense_item_id' => $allocation['expense_item_id'] ?? null,
-                    'expense_sub_item_id' => $allocation['expense_sub_item_id'] ?? null
-                ];
 
-                $newAllocation = TranAppropriation::create($appropriationData);
-                $appropriations[] = $newAllocation;
+                if ($existing->expense_sub_item_id) {
+                    $existingProcessedSubItems[] = $existing->expense_sub_item_id;
+                }
 
-                \Log::info('Created new allocation:', [
-                    'allocation_id' => $newAllocation->id,
-                    'amount' => $allocation['amount'],
-                    'expense_sub_item_id' => $allocation['expense_sub_item_id'] ?? null
-                ]);
+                if ($existing->expense_item_id) {
+                    $existingProcessedItems[] = $existing->expense_item_id;
+                }
 
-                // Log committed allocation
-                $identifier = $this->getExpenseIdentifier($allocation);
-                AdminAuthController::logUserAction(
-                    $request->user(),
-                    'Committed Allocation',
-                    sprintf(
-                        'Committed allocation %s: ₱%s for budget "%s"',
-                        $identifier,
-                        number_format($allocation['amount'], 2),
-                        $budget->description
-                    )
-                );
+                if ($existing->expense_type_id) {
+                    $existingProcessedTypes[] = $existing->expense_type_id;
+                }
+
+                if ($existing->expense_class_id) {
+                    $existingProcessedClasses[] = $existing->expense_class_id;
+                }
+
+            } elseif ($existing->expense_sub_type_id) {
+
+                $existingProcessedSubItems[] = $existing->expense_sub_item_id;
+                $existingProcessedItems[] = $existing->expense_item_id;
+                $existingProcessedTypes[] = $existing->expense_type_id;
+                $existingProcessedClasses[] = $existing->expense_class_id;
+
+            } elseif ($existing->expense_sub_item_id) {
+
+                $existingProcessedItems[] = $existing->expense_item_id;
+                $existingProcessedTypes[] = $existing->expense_type_id;
+                $existingProcessedClasses[] = $existing->expense_class_id;
+
+            } elseif ($existing->expense_item_id) {
+
+                $existingProcessedTypes[] = $existing->expense_type_id;
+                $existingProcessedClasses[] = $existing->expense_class_id;
+
+            } elseif ($existing->expense_type_id) {
+
+                $existingProcessedClasses[] = $existing->expense_class_id;
             }
         }
 
-        // Collect item IDs that have sub-item allocations
-        $itemsWithSubAllocations = [];
-        foreach ($validated['allocations'] as $allocation) {
-            if ($allocation['expense_sub_item_id']) {
-                $itemsWithSubAllocations[] = $allocation['expense_item_id'];
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 2
+        | Calculate existing total using the LOWEST allocation level.
+        |--------------------------------------------------------------------------
+        */
+
+        $existingLowestLevel = [];
+
+        foreach ($existingAllocations as $existing) {
+
+            /*
+            * LEVEL 6 - Sub Sub Type
+            */
+            if ($existing->expense_sub_sub_type_id) {
+
+                $existingLowestLevel[] = (float) $existing->amount;
+
+                continue;
+            }
+
+            /*
+            * LEVEL 5 - Sub Type
+            *
+            * Do not count if one of its Sub Sub Types already has
+            * an allocation.
+            */
+            if (
+                $existing->expense_sub_type_id &&
+                !in_array(
+                    $existing->expense_sub_type_id,
+                    $existingProcessedSubTypes
+                )
+            ) {
+                $existingLowestLevel[] = (float) $existing->amount;
+
+                continue;
+            }
+
+            /*
+            * LEVEL 4 - Sub Item
+            */
+            if (
+                $existing->expense_sub_item_id &&
+                !in_array(
+                    $existing->expense_sub_item_id,
+                    $existingProcessedSubItems
+                )
+            ) {
+                $existingLowestLevel[] = (float) $existing->amount;
+
+                continue;
+            }
+
+            /*
+            * LEVEL 3 - Item
+            */
+            if (
+                $existing->expense_item_id &&
+                !in_array(
+                    $existing->expense_item_id,
+                    $existingProcessedItems
+                )
+            ) {
+                $existingLowestLevel[] = (float) $existing->amount;
+
+                continue;
+            }
+
+            /*
+            * LEVEL 2 - Type
+            */
+            if (
+                $existing->expense_type_id &&
+                !in_array(
+                    $existing->expense_type_id,
+                    $existingProcessedTypes
+                )
+            ) {
+                $existingLowestLevel[] = (float) $existing->amount;
+
+                continue;
+            }
+
+            /*
+            * LEVEL 1 - Class
+            */
+            if (
+                $existing->expense_class_id &&
+                !in_array(
+                    $existing->expense_class_id,
+                    $existingProcessedClasses
+                )
+            ) {
+                $existingLowestLevel[] = (float) $existing->amount;
             }
         }
 
-        // Delete only the allocations that are no longer needed
-        // This preserves TranExpenseDetail records for allocations that still exist
-        \Log::info('Allocations to be deleted:', [
-            'count' => count($existingAllocationMap),
-            'allocations' => array_map(function($alloc) {
+        $existingTotal = array_sum($existingLowestLevel);
+
+        \Log::info('Existing allocations before processing:', [
+            'existing_count' => $existingAllocations->count(),
+            'existing_total' => $existingTotal,
+            'existing_allocations' => $existingAllocations->map(function ($alloc) {
                 return [
                     'id' => $alloc->id,
                     'amount' => $alloc->amount,
@@ -955,48 +1095,660 @@ class AppropriationController extends Controller
                     'expense_type_id' => $alloc->expense_type_id,
                     'expense_item_id' => $alloc->expense_item_id,
                     'expense_sub_item_id' => $alloc->expense_sub_item_id,
-                    'key' => $this->getAllocationKey($alloc)
+                    'expense_sub_type_id' => $alloc->expense_sub_type_id,
+                    'expense_sub_sub_type_id' => $alloc->expense_sub_sub_type_id,
+                    'key' => $this->getAllocationKey($alloc),
                 ];
-            }, $existingAllocationMap)
+            })->toArray()
         ]);
 
-        foreach ($existingAllocationMap as $key => $existingAllocation) {
-            // Don't delete item allocations if they have sub-item allocations
-            if ($existingAllocation->expense_item_id && !$existingAllocation->expense_sub_item_id && in_array($existingAllocation->expense_item_id, $itemsWithSubAllocations)) {
-                continue;
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 3
+        | Make sure an existing appropriation cannot be reduced below
+        | the amount that has already been disbursed.
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($validated['allocations'] as $allocation) {
+
+            $existingAllocation = $existingAllocations->first(
+                function ($existing) use ($allocation) {
+
+                    return $existing->expense_class_id == (
+                        $allocation['expense_class_id'] ?? null
+                    )
+                    && $existing->expense_type_id == (
+                        $allocation['expense_type_id'] ?? null
+                    )
+                    && $existing->expense_item_id == (
+                        $allocation['expense_item_id'] ?? null
+                    )
+                    && $existing->expense_sub_item_id == (
+                        $allocation['expense_sub_item_id'] ?? null
+                    )
+                    && $existing->expense_sub_type_id == (
+                        $allocation['expense_sub_type_id'] ?? null
+                    )
+                    && $existing->expense_sub_sub_type_id == (
+                        $allocation['expense_sub_sub_type_id'] ?? null
+                    );
+                }
+            );
+
+            if ($existingAllocation) {
+
+                $disbursedAmount = \App\Models\TranExpenseDetail::where(
+                    'appropriation_id',
+                    $existingAllocation->id
+                )->sum('amount');
+
+                if ($allocation['amount'] < $disbursedAmount) {
+
+                    return response()->json([
+                        'status' => false,
+                        'message' => sprintf(
+                            'Cannot reduce appropriation below the disbursed amount. New amount must be at least ₱%s.',
+                            number_format($disbursedAmount, 2)
+                        )
+                    ], 422);
+                }
             }
-            \Log::info('Deleting allocation:', [
-                'allocation_id' => $existingAllocation->id,
-                'amount' => $existingAllocation->amount,
-                'expense_sub_item_id' => $existingAllocation->expense_sub_item_id
-            ]);
-            $existingAllocation->delete();
         }
 
-        // Update budget's current amount by the net change
-        $budget->current_amount = $budget->current_amount - $netChange;
-        $budget->save();
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 4
+        | Determine which levels have deeper allocations in the NEW request.
+        |--------------------------------------------------------------------------
+        */
 
-        \Log::info('Budget updated after allocation', [
+        $newProcessedSubTypes = [];
+        $newProcessedSubItems = [];
+        $newProcessedItems = [];
+        $newProcessedTypes = [];
+        $newProcessedClasses = [];
+
+        foreach ($validated['allocations'] as $allocation) {
+
+            $subSubTypeId = $allocation['expense_sub_sub_type_id'] ?? null;
+            $subTypeId = $allocation['expense_sub_type_id'] ?? null;
+            $subItemId = $allocation['expense_sub_item_id'] ?? null;
+            $itemId = $allocation['expense_item_id'] ?? null;
+            $typeId = $allocation['expense_type_id'] ?? null;
+            $classId = $allocation['expense_class_id'] ?? null;
+
+            /*
+            * Sub Sub Type has the deepest priority.
+            */
+            if ($subSubTypeId) {
+
+                if ($subTypeId) {
+                    $newProcessedSubTypes[] = $subTypeId;
+                }
+
+                if ($subItemId) {
+                    $newProcessedSubItems[] = $subItemId;
+                }
+
+                if ($itemId) {
+                    $newProcessedItems[] = $itemId;
+                }
+
+                if ($typeId) {
+                    $newProcessedTypes[] = $typeId;
+                }
+
+                if ($classId) {
+                    $newProcessedClasses[] = $classId;
+                }
+
+                continue;
+            }
+
+            /*
+            * Sub Type
+            */
+            if ($subTypeId) {
+
+                if ($subItemId) {
+                    $newProcessedSubItems[] = $subItemId;
+                }
+
+                if ($itemId) {
+                    $newProcessedItems[] = $itemId;
+                }
+
+                if ($typeId) {
+                    $newProcessedTypes[] = $typeId;
+                }
+
+                if ($classId) {
+                    $newProcessedClasses[] = $classId;
+                }
+
+                continue;
+            }
+
+            /*
+            * Sub Item
+            */
+            if ($subItemId) {
+
+                if ($itemId) {
+                    $newProcessedItems[] = $itemId;
+                }
+
+                if ($typeId) {
+                    $newProcessedTypes[] = $typeId;
+                }
+
+                if ($classId) {
+                    $newProcessedClasses[] = $classId;
+                }
+
+                continue;
+            }
+
+            /*
+            * Item
+            */
+            if ($itemId) {
+
+                if ($typeId) {
+                    $newProcessedTypes[] = $typeId;
+                }
+
+                if ($classId) {
+                    $newProcessedClasses[] = $classId;
+                }
+
+                continue;
+            }
+
+            /*
+            * Type
+            */
+            if ($typeId) {
+
+                if ($classId) {
+                    $newProcessedClasses[] = $classId;
+                }
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 5
+        | Calculate NEW total using only the lowest level.
+        |--------------------------------------------------------------------------
+        */
+
+        $newLowestLevel = [];
+
+        foreach ($validated['allocations'] as $allocation) {
+
+            $subSubTypeId = $allocation['expense_sub_sub_type_id'] ?? null;
+            $subTypeId = $allocation['expense_sub_type_id'] ?? null;
+            $subItemId = $allocation['expense_sub_item_id'] ?? null;
+            $itemId = $allocation['expense_item_id'] ?? null;
+            $typeId = $allocation['expense_type_id'] ?? null;
+            $classId = $allocation['expense_class_id'] ?? null;
+
+            /*
+            * LEVEL 6 - Sub Sub Type
+            */
+            if ($subSubTypeId) {
+
+                $newLowestLevel[] = (float) $allocation['amount'];
+
+                continue;
+            }
+
+            /*
+            * LEVEL 5 - Sub Type
+            */
+            if (
+                $subTypeId &&
+                !in_array($subTypeId, $newProcessedSubTypes)
+            ) {
+                $newLowestLevel[] = (float) $allocation['amount'];
+
+                continue;
+            }
+
+            /*
+            * LEVEL 4 - Sub Item
+            */
+            if (
+                $subItemId &&
+                !in_array($subItemId, $newProcessedSubItems)
+            ) {
+                $newLowestLevel[] = (float) $allocation['amount'];
+
+                continue;
+            }
+
+            /*
+            * LEVEL 3 - Item
+            */
+            if (
+                $itemId &&
+                !in_array($itemId, $newProcessedItems)
+            ) {
+                $newLowestLevel[] = (float) $allocation['amount'];
+
+                continue;
+            }
+
+            /*
+            * LEVEL 2 - Type
+            */
+            if (
+                $typeId &&
+                !in_array($typeId, $newProcessedTypes)
+            ) {
+                $newLowestLevel[] = (float) $allocation['amount'];
+
+                continue;
+            }
+
+            /*
+            * LEVEL 1 - Class
+            */
+            if (
+                $classId &&
+                !in_array($classId, $newProcessedClasses)
+            ) {
+                $newLowestLevel[] = (float) $allocation['amount'];
+            }
+        }
+
+        $newTotal = array_sum($newLowestLevel);
+
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 6
+        | Calculate net change
+        |--------------------------------------------------------------------------
+        */
+
+        $netChange = $newTotal - $existingTotal;
+
+        \Log::info('Allocation validation', [
             'budget_id' => $budget->id,
-            'new_current_amount' => $budget->current_amount,
-            'net_change' => $netChange
-        ]);
-
-        return response()->json([
-            'status' => true,
-            'message' => 'Allocation saved successfully',
-            'budget' => $budget->fresh(),
-            'appropriations' => $appropriations,
+            'budget_current_amount' => $budget->current_amount,
+            'existing_total' => $existingTotal,
+            'new_total' => $newTotal,
             'net_change' => $netChange,
-            'updated_amount' => $budget->current_amount
+            'allocations' => $validated['allocations'],
         ]);
-    });
-}
 
-    /**
-     * Helper method to get a human-readable identifier for an expense allocation
-     */
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 7
+        | Make sure the additional allocation does not exceed the
+        | remaining budget.
+        |--------------------------------------------------------------------------
+        */
+
+        if ($netChange > $budget->current_amount) {
+
+            \Log::warning('Net change exceeds available budget', [
+                'net_change' => $netChange,
+                'available_budget' => $budget->current_amount,
+                'difference' => $netChange - $budget->current_amount,
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => sprintf(
+                    'Net change exceeds available budget by ₱%s. Available: ₱%s, Net Change: ₱%s',
+                    number_format(
+                        $netChange - $budget->current_amount,
+                        2
+                    ),
+                    number_format(
+                        $budget->current_amount,
+                        2
+                    ),
+                    number_format(
+                        $netChange,
+                        2
+                    )
+                )
+            ], 422);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | STEP 8
+        | Save allocations
+        |--------------------------------------------------------------------------
+        */
+
+        return DB::transaction(function () use (
+            $validated,
+            $budget,
+            $request,
+            $netChange,
+            $existingAllocations
+        ) {
+
+            $appropriations = [];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Create map of existing allocations
+            |--------------------------------------------------------------------------
+            */
+
+            $existingAllocationMap = [];
+
+            foreach ($existingAllocations as $existing) {
+
+                $key = $this->getAllocationKey($existing);
+
+                $existingAllocationMap[$key] = $existing;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Process submitted allocations
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($validated['allocations'] as $allocation) {
+
+                $allocationKey = $this->getAllocationKey($allocation);
+
+                \Log::info('Processing allocation:', [
+                    'allocation' => $allocation,
+                    'allocation_key' => $allocationKey,
+                    'exists_in_map' => isset(
+                        $existingAllocationMap[$allocationKey]
+                    ),
+                ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | UPDATE existing allocation
+                |--------------------------------------------------------------------------
+                */
+
+                if (isset($existingAllocationMap[$allocationKey])) {
+
+                    $existingAllocation =
+                        $existingAllocationMap[$allocationKey];
+
+                    $previousAmount =
+                        (float) $existingAllocation->amount;
+
+                    $existingAllocation->update([
+                        'amount' => $allocation['amount'],
+                        'transaction_date' => now(),
+                        'status' => 'committed',
+                        'user_id' => $request->user()->id,
+                    ]);
+
+                    $appropriations[] = $existingAllocation;
+
+                    /*
+                    * Remove from map because it still exists.
+                    */
+                    unset($existingAllocationMap[$allocationKey]);
+
+                    \Log::info('Updated existing allocation:', [
+                        'allocation_id' => $existingAllocation->id,
+                        'previous_amount' => $previousAmount,
+                        'new_amount' => $allocation['amount'],
+                    ]);
+
+                    /*
+                    * Log only if amount actually changed.
+                    */
+                    if (
+                        abs(
+                            $previousAmount -
+                            (float) $allocation['amount']
+                        ) > 0.01
+                    ) {
+
+                        $identifier =
+                            $this->getExpenseIdentifier($allocation);
+
+                        AdminAuthController::logUserAction(
+                            $request->user(),
+                            'Edited Allocation',
+                            sprintf(
+                                'Edited allocation %s: from ₱%s to ₱%s for budget "%s"',
+                                $identifier,
+                                number_format(
+                                    $previousAmount,
+                                    2
+                                ),
+                                number_format(
+                                    $allocation['amount'],
+                                    2
+                                ),
+                                $budget->description
+                            )
+                        );
+                    }
+
+                /*
+                |--------------------------------------------------------------------------
+                | CREATE new allocation
+                |--------------------------------------------------------------------------
+                */
+
+                } else {
+
+                    $appropriationData = [
+                        'barangay_id' => $request->user()->barangay_id,
+                        'budget_id' => $budget->id,
+
+                        // Expense hierarchy
+                        'expense_class_id' =>
+                            $allocation['expense_class_id'] ?? null,
+
+                        'expense_type_id' =>
+                            $allocation['expense_type_id'] ?? null,
+
+                        'expense_item_id' =>
+                            $allocation['expense_item_id'] ?? null,
+
+                        'expense_sub_item_id' =>
+                            $allocation['expense_sub_item_id'] ?? null,
+
+                        'expense_sub_type_id' =>
+                            $allocation['expense_sub_type_id'] ?? null,
+
+                        'expense_sub_sub_type_id' =>
+                            $allocation['expense_sub_sub_type_id'] ?? null,
+
+                        // Allocation information
+                        'amount' => $allocation['amount'],
+                        'transaction_date' => now(),
+                        'status' => 'committed',
+                        'user_id' => $request->user()->id,
+                    ];
+
+                    $newAllocation =
+                        TranAppropriation::create(
+                            $appropriationData
+                        );
+
+                    $appropriations[] = $newAllocation;
+
+                    \Log::info('Created new allocation:', [
+                        'allocation_id' => $newAllocation->id,
+                        'amount' => $allocation['amount'],
+                        'expense_class_id' =>
+                            $allocation['expense_class_id'] ?? null,
+                        'expense_type_id' =>
+                            $allocation['expense_type_id'] ?? null,
+                        'expense_item_id' =>
+                            $allocation['expense_item_id'] ?? null,
+                        'expense_sub_item_id' =>
+                            $allocation['expense_sub_item_id'] ?? null,
+                        'expense_sub_type_id' =>
+                            $allocation['expense_sub_type_id'] ?? null,
+                        'expense_sub_sub_type_id' =>
+                            $allocation['expense_sub_sub_type_id'] ?? null,
+                    ]);
+
+                    /*
+                    * Log committed allocation.
+                    */
+                    $identifier =
+                        $this->getExpenseIdentifier($allocation);
+
+                    AdminAuthController::logUserAction(
+                        $request->user(),
+                        'Committed Allocation',
+                        sprintf(
+                            'Committed allocation %s: ₱%s for budget "%s"',
+                            $identifier,
+                            number_format(
+                                $allocation['amount'],
+                                2
+                            ),
+                            $budget->description
+                        )
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | STEP 9
+            | Delete allocations that were removed from the submitted hierarchy.
+            |
+            | We no longer use the old "itemsWithSubAllocations" logic because
+            | all six levels are now represented by the allocation key.
+            |--------------------------------------------------------------------------
+            */
+
+            \Log::info('Allocations to be deleted:', [
+                'count' => count($existingAllocationMap),
+                'allocations' => array_map(
+                    function ($alloc) {
+
+                        return [
+                            'id' => $alloc->id,
+                            'amount' => $alloc->amount,
+                            'expense_class_id' =>
+                                $alloc->expense_class_id,
+                            'expense_type_id' =>
+                                $alloc->expense_type_id,
+                            'expense_item_id' =>
+                                $alloc->expense_item_id,
+                            'expense_sub_item_id' =>
+                                $alloc->expense_sub_item_id,
+                            'expense_sub_type_id' =>
+                                $alloc->expense_sub_type_id,
+                            'expense_sub_sub_type_id' =>
+                                $alloc->expense_sub_sub_type_id,
+                            'key' => $this->getAllocationKey($alloc),
+                        ];
+                    },
+                    $existingAllocationMap
+                ),
+            ]);
+
+            foreach (
+                $existingAllocationMap as $key => $existingAllocation
+            ) {
+
+                /*
+                * Safety check:
+                *
+                * Do not delete an appropriation that has already been
+                * disbursed. The validation above protects reductions of
+                * allocations that are submitted, but this protects
+                * allocations that are completely removed.
+                */
+                $disbursedAmount =
+                    \App\Models\TranExpenseDetail::where(
+                        'appropriation_id',
+                        $existingAllocation->id
+                    )->sum('amount');
+
+                if ($disbursedAmount > 0) {
+
+                    \Log::warning(
+                        'Skipping deletion of allocation with disbursed amount:',
+                        [
+                            'allocation_id' =>
+                                $existingAllocation->id,
+                            'allocation_amount' =>
+                                $existingAllocation->amount,
+                            'disbursed_amount' =>
+                                $disbursedAmount,
+                            'key' => $key,
+                        ]
+                    );
+
+                    continue;
+                }
+
+                \Log::info('Deleting allocation:', [
+                    'allocation_id' => $existingAllocation->id,
+                    'amount' => $existingAllocation->amount,
+                    'expense_class_id' =>
+                        $existingAllocation->expense_class_id,
+                    'expense_type_id' =>
+                        $existingAllocation->expense_type_id,
+                    'expense_item_id' =>
+                        $existingAllocation->expense_item_id,
+                    'expense_sub_item_id' =>
+                        $existingAllocation->expense_sub_item_id,
+                    'expense_sub_type_id' =>
+                        $existingAllocation->expense_sub_type_id,
+                    'expense_sub_sub_type_id' =>
+                        $existingAllocation->expense_sub_sub_type_id,
+                ]);
+
+                $existingAllocation->delete();
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | STEP 10
+            | Update remaining budget
+            |--------------------------------------------------------------------------
+            */
+
+            $budget->current_amount =
+                $budget->current_amount - $netChange;
+
+            $budget->save();
+
+            \Log::info('Budget updated after allocation', [
+                'budget_id' => $budget->id,
+                'new_current_amount' => $budget->current_amount,
+                'net_change' => $netChange,
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Return response
+            |--------------------------------------------------------------------------
+            */
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Allocation saved successfully',
+                'budget' => $budget->fresh(),
+                'appropriations' => $appropriations,
+                'net_change' => $netChange,
+                'updated_amount' => $budget->current_amount,
+            ]);
+        });
+    }
+
+    //Helper method to get a human-readable identifier for an expense allocation
     private function getExpenseIdentifier($allocation)
     {
         if (isset($allocation['expense_item_id'])) {
@@ -1004,7 +1756,7 @@ class AppropriationController extends Controller
             if ($item) {
                 $type = \App\Models\LibExpenseType::find($item->expense_type_id);
                 $class = \App\Models\LibExpenseClass::find($item->expense_class_id);
-                return sprintf('%s > %s > %s', 
+                return sprintf('%s > %s > %s',
                     $class ? $class->name : 'Unknown Class',
                     $type ? $type->name : 'Unknown Type',
                     $item->name
@@ -1014,7 +1766,7 @@ class AppropriationController extends Controller
             $type = \App\Models\LibExpenseType::find($allocation['expense_type_id']);
             if ($type) {
                 $class = \App\Models\LibExpenseClass::find($type->expense_class_id);
-                return sprintf('%s > %s', 
+                return sprintf('%s > %s',
                     $class ? $class->name : 'Unknown Class',
                     $type->name
                 );
@@ -1023,61 +1775,110 @@ class AppropriationController extends Controller
             $class = \App\Models\LibExpenseClass::find($allocation['expense_class_id']);
             return $class ? $class->name : 'Unknown Class';
         }
-        
+
         return 'Unknown Expense Account';
     }
 
-    /**
-     * Helper method to generate a unique key for an allocation
-     */
+    //Helper method to generate a unique key for an allocation
     private function getAllocationKey($allocation)
     {
         // For arrays (from request)
         if (is_array($allocation)) {
             return sprintf(
-                'class_%s_type_%s_item_%s_subitem_%s',
+                'class_%s_type_%s_item_%s_subitem_%s_subtype_%s_subsubtype_%s',
                 $allocation['expense_class_id'] ?? 'null',
                 $allocation['expense_type_id'] ?? 'null',
                 $allocation['expense_item_id'] ?? 'null',
-                $allocation['expense_sub_item_id'] ?? 'null'
+                $allocation['expense_sub_item_id'] ?? 'null',
+                $allocation['expense_sub_type_id'] ?? 'null',
+                $allocation['expense_sub_sub_type_id'] ?? 'null'
             );
         }
 
         // For models (from database)
         return sprintf(
-            'class_%s_type_%s_item_%s_subitem_%s',
+            'class_%s_type_%s_item_%s_subitem_%s_subtype_%s_subsubtype_%s',
             $allocation->expense_class_id ?? 'null',
             $allocation->expense_type_id ?? 'null',
             $allocation->expense_item_id ?? 'null',
-            $allocation->expense_sub_item_id ?? 'null'
+            $allocation->expense_sub_item_id ?? 'null',
+            $allocation->expense_sub_type_id ?? 'null',
+            $allocation->expense_sub_sub_type_id ?? 'null'
         );
     }
 
     // In your AppropriationController.php
     public function getBudgetAllocations($budgetId)
     {
-        $allocations = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem', 'expenseSubItem'])
+        try {
+            $allocations = TranAppropriation::with([
+                'expenseClass:id,name,order',
+                'expenseType:id,name,expense_class_id,order',
+                'expenseItem:id,name,expense_type_id,order',
+                'expenseSubItem:id,name,expense_item_id,order',
+                'expenseSubType:id,name,sub_item_id,order',
+                'expenseSubSubType:id,name,sub_type_id,order',
+            ])
             ->where('budget_id', $budgetId)
+            ->orderBy('created_at', 'desc')
             ->get()
-            ->map(function($alloc) {
+            ->map(function ($alloc) {
+
                 return [
                     'id' => $alloc->id,
-                    'expense_item_id' => $alloc->expense_item_id,
-                    'expense_type_id' => $alloc->expense_type_id,
+
+                    'amount' => (float) $alloc->amount,
+
+                    // Expense Class
                     'expense_class_id' => $alloc->expense_class_id,
+                    'expense_class_name' => $alloc->expenseClass?->name,
+                    'expense_class_order' => $alloc->expenseClass?->order,
+
+                    // Expense Type
+                    'expense_type_id' => $alloc->expense_type_id,
+                    'expense_type_name' => $alloc->expenseType?->name,
+                    'expense_type_order' => $alloc->expenseType?->order,
+
+                    // Expense Item
+                    'expense_item_id' => $alloc->expense_item_id,
+                    'expense_item_name' => $alloc->expenseItem?->name,
+                    'expense_item_order' => $alloc->expenseItem?->order,
+
+                    // Expense Sub Item
                     'expense_sub_item_id' => $alloc->expense_sub_item_id,
-                    'expense_class_name' => $alloc->expenseClass->name ?? null,
-                    'expense_type_name' => $alloc->expenseType->name ?? null,
-                    'expense_item_name' => $alloc->expenseItem->name ?? null,
-                    'expense_sub_item_name' => $alloc->expenseSubItem->name ?? null,
-                    'amount' => (float)$alloc->amount
+                    'expense_sub_item_name' => $alloc->expenseSubItem?->name,
+                    'expense_sub_item_order' => $alloc->expenseSubItem?->order,
+
+                    // Expense Sub Type
+                    'expense_sub_type_id' => $alloc->expense_sub_type_id,
+                    'expense_sub_type_name' => $alloc->expenseSubType?->name,
+                    'expense_sub_type_order' => $alloc->expenseSubType?->order,
+
+                    // Expense Sub Sub Type
+                    'expense_sub_sub_type_id' => $alloc->expense_sub_sub_type_id,
+                    'expense_sub_sub_type_name' => $alloc->expenseSubSubType?->name,
+                    'expense_sub_sub_type_order' => $alloc->expenseSubSubType?->order,
                 ];
             });
 
-        return response()->json([
-            'status' => true,
-            'data' => $allocations
-        ]);
+            return response()->json([
+                'status' => true,
+                'data' => $allocations,
+            ]);
+
+        } catch (\Exception $e) {
+
+            \Log::error('Failed to fetch budget allocations', [
+                'budget_id' => $budgetId,
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to fetch budget allocations: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     // Rest of the methods remain the same...
@@ -1105,65 +1906,156 @@ class AppropriationController extends Controller
     public function getAllocationHistory($budgetId)
     {
         try {
-            // Get the budget with all related appropriations
+
             $budget = Budget::with([
-                'tranAppropriations' => function($query) {
+                'tranAppropriations' => function ($query) {
                     $query->with([
-                        'expenseClass:id,name',
-                        'expenseType:id,name,expense_class_id',
-                        'expenseItem:id,name,expense_type_id',
-                        'expenseSubItem:id,name,parent_item_id'
-                    ])->orderBy('created_at', 'desc');
+                        'expenseClass:id,name,order',
+                        'expenseType:id,name,expense_class_id,order',
+                        'expenseItem:id,name,expense_type_id,order',
+                        'expenseSubItem:id,name,expense_item_id,order',
+                        'expenseSubType:id,name,sub_item_id,order',
+                        'expenseSubSubType:id,name,sub_type_id,order',
+                    ])
+                    ->orderBy('created_at', 'desc');
                 },
-                'fiscalYear'
+                'fiscalYear',
             ])->findOrFail($budgetId);
 
-            // Use all appropriations (items, types, and classes)
             $allAppropriations = $budget->tranAppropriations;
 
-            // Group by allocation date (session)
-            $groupedHistory = $allAppropriations->groupBy(function($item) {
-                return $item->created_at->format('Y-m-d H:i:s');
+            //Group allocations by creation timestamp
+            $groupedHistory = $allAppropriations->groupBy(function ($item) {
+                return optional($item->created_at)->format('Y-m-d H:i:s');
             });
 
-            // Format response with ALL historical records
-            $history = $groupedHistory->map(function($allocations, $date) use ($budget) {
-                return [
-                    'date' => $date,
-                    'created_at' => $allocations->first()->created_at,
-                    'total_allocated' => $allocations->sum('amount'),
-                    'allocations' => $allocations->map(function($alloc) {
-                        return [
-                            'id' => $alloc->id,
-                            'amount' => (float)$alloc->amount,
-                            'expense_class_id' => $alloc->expense_class_id,
-                            'expense_class_name' => $alloc->expenseClass->name ?? null,
-                            'expense_type_id' => $alloc->expense_type_id,
-                            'expense_type_name' => $alloc->expenseType->name ?? null,
-                            'expense_item_id' => $alloc->expense_item_id,
-                            'expense_item_name' => $alloc->expenseItem->name ?? null,
-                            'expense_sub_item_id' => $alloc->expense_sub_item_id,
-                            'expense_sub_item_name' => $alloc->expenseSubItem->name ?? null,
-                        ];
-                    }),
-                    'remaining_unappropriated' => $budget->current_amount
-                ];
-            })->values();
+            //Build history
+            $history = $groupedHistory
+                ->map(function ($allocations, $date) use ($budget) {
+
+                    return [
+                        'date' => $date,
+
+                        'created_at' =>
+                            $allocations->first()?->created_at,
+
+                        'total_allocated' =>
+                            (float) $allocations->sum('amount'),
+
+                        'allocations' =>
+                            $allocations->map(function ($alloc) {
+
+                                return [
+                                    'id' => $alloc->id,
+
+                                    'amount' =>
+                                        (float) $alloc->amount,
+
+                                    //EXPENSE CLASS
+                                    'expense_class_id' =>
+                                        $alloc->expense_class_id,
+
+                                    'expense_class_name' =>
+                                        $alloc->expenseClass?->name,
+
+                                    'expense_class_order' =>
+                                        $alloc->expenseClass?->order,
+
+                                    //EXPENSE TYPE
+                                    'expense_type_id' =>
+                                        $alloc->expense_type_id,
+
+                                    'expense_type_name' =>
+                                        $alloc->expenseType?->name,
+
+                                    'expense_type_order' =>
+                                        $alloc->expenseType?->order,
+
+                                    //EXPENSE ITEM
+                                    'expense_item_id' =>
+                                        $alloc->expense_item_id,
+
+                                    'expense_item_name' =>
+                                        $alloc->expenseItem?->name,
+
+                                    'expense_item_order' =>
+                                        $alloc->expenseItem?->order,
+
+                                    //EXPENSE SUB ITEM
+                                    'expense_sub_item_id' =>
+                                        $alloc->expense_sub_item_id,
+
+                                    'expense_sub_item_name' =>
+                                        $alloc->expenseSubItem?->name,
+
+                                    'expense_sub_item_order' =>
+                                        $alloc->expenseSubItem?->order,
+
+                                    //EXPENSE SUB TYPE
+                                    'expense_sub_type_id' =>
+                                        $alloc->expense_sub_type_id,
+
+                                    'expense_sub_type_name' =>
+                                        $alloc->expenseSubType?->name,
+
+                                    'expense_sub_type_order' =>
+                                        $alloc->expenseSubType?->order,
+
+                                    //EXPENSE SUB SUB TYPE
+                                    'expense_sub_sub_type_id' =>
+                                        $alloc->expense_sub_sub_type_id,
+
+                                    'expense_sub_sub_type_name' =>
+                                        $alloc->expenseSubSubType?->name,
+
+                                    'expense_sub_sub_type_order' =>
+                                        $alloc->expenseSubSubType?->order,
+                                ];
+
+                            })->values(),
+
+                        'remaining_unappropriated' =>
+                            (float) $budget->current_amount,
+                    ];
+
+                })
+                ->values();
 
             return response()->json([
                 'status' => true,
+
                 'data' => [
-                    'budget' => $budget->only(['id', 'description', 'original_amount', 'current_amount']),
-                    'fiscal_year' => $budget->fiscalYear->year ?? null,
-                    'history' => $history,
-                    'total_allocated_to_date' => $allAppropriations->sum('amount')
-                ]
+                    'budget' => $budget->only([
+                        'id',
+                        'description',
+                        'original_amount',
+                        'current_amount',
+                    ]),
+
+                    'fiscal_year' =>
+                        $budget->fiscalYear?->year,
+
+                    'history' =>
+                        $history,
+
+                    'total_allocated_to_date' =>
+                        (float) $allAppropriations->sum('amount'),
+                ],
             ]);
 
         } catch (\Exception $e) {
+
+            \Log::error('Failed to fetch allocation history', [
+                'budget_id' => $budgetId,
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'status' => false,
-                'message' => 'Failed to fetch allocation history: ' . $e->getMessage()
+                'message' =>
+                    'Failed to fetch allocation history: '
+                    . $e->getMessage(),
             ], 500);
         }
     }
@@ -1196,7 +2088,7 @@ class AppropriationController extends Controller
                 // Check if the new amount is less than what has been disbursed
                 if ($allocation['amount'] < $disbursedAmount) {
                     $expenseIdentifier = $this->getExpenseIdentifier($allocation);
-                    
+
                     return response()->json([
                         'status' => false,
                         'message' => sprintf(
@@ -1241,7 +2133,7 @@ class AppropriationController extends Controller
             // Process new allocations
             foreach ($validated['allocations'] as $alloc) {
                 $allocationKey = $this->getAllocationKey($alloc);
-                
+
                 if (isset($existingAllocationMap[$allocationKey])) {
                     // Update existing allocation
                     $existingAllocation = $existingAllocationMap[$allocationKey];
@@ -1267,7 +2159,7 @@ class AppropriationController extends Controller
                             )
                         );
                     }
-                    
+
                     // Remove from map to track which ones were updated
                     unset($existingAllocationMap[$allocationKey]);
                 } else {
@@ -1326,24 +2218,24 @@ class AppropriationController extends Controller
                     'message' => 'User not authenticated'
                 ], 401);
             }
-            
+
             \Log::info('Dashboard summary requested for user: ' . $user->id);
 
             $barangayId = $user->barangay_id;
             $year = $request->input('year', now()->year); // Default to current year if not specified
-            
+
             \Log::info('Barangay ID: ' . $barangayId . ', Year: ' . $year);
 
 
             // Get budgets for this barangay with year filter - include both annual and supplemental budgets for obligation calculation
             $budgetsQuery = Budget::with(['tranAppropriations', 'fiscalYear'])
                 ->where('barangay_id', $barangayId);
-            
+
             // Get only annual budgets for total appropriation calculation
             $annualBudgetsQuery = Budget::with(['tranAppropriations', 'fiscalYear'])
                 ->where('barangay_id', $barangayId)
                 ->where('budget_type', \App\BudgetType::ANNUAL);
-            
+
             if ($year !== 'all') {
                 $budgetsQuery->whereHas('fiscalYear', function($q) use ($year) {
                     $q->where('year', $year);
@@ -1352,7 +2244,7 @@ class AppropriationController extends Controller
                     $q->where('year', $year);
                 });
             }
-            
+
             $budgets = $budgetsQuery->get(); // All budgets for obligation calculation
             $annualBudgets = $annualBudgetsQuery->get(); // Only annual budgets for appropriation calculation
 
@@ -1476,7 +2368,7 @@ class AppropriationController extends Controller
             if ($fiscalYear) {
                 $expenseHierarchyQuery = LibExpenseClass::with(['types.items'])
                     ->where('fiscal_year_id', $fiscalYear->id);
-                
+
                 $expenseHierarchy = $expenseHierarchyQuery->get()
                     ->map(function($class) {
                         return [
@@ -1496,7 +2388,7 @@ class AppropriationController extends Controller
                             })
                         ];
                     });
-                
+
                 \Log::info('Found ' . $expenseHierarchy->count() . ' expense classes for fiscal year ' . $fiscalYear->id);
                 foreach ($expenseHierarchy as $class) {
                     \Log::info('Expense class: ' . $class['name'] . ' (ID: ' . $class['id'] . ') with ' . count($class['children']) . ' types');
@@ -1538,7 +2430,7 @@ class AppropriationController extends Controller
             }
 
             \Log::info('Class totals count: ' . count($classTotals));
-            
+
             // If no class totals found, create a placeholder
             if (empty($classTotals)) {
                 \Log::info('No class totals found, creating placeholder data');
@@ -1584,7 +2476,7 @@ class AppropriationController extends Controller
                     ->whereNull('expense_item_id')
                     ->sum('amount');
             });
-            
+
             $itemLevelTotal = $budgets->sum(function($budget) {
                 return $budget->tranAppropriations
                     ->whereNotNull('expense_item_id')
@@ -1595,14 +2487,14 @@ class AppropriationController extends Controller
             $totalAllocations = $budgets->sum(function($budget) {
                 return $budget->tranAppropriations->count();
             });
-            
+
             $typeLevelAllocations = $budgets->sum(function($budget) {
                 return $budget->tranAppropriations
                     ->whereNotNull('expense_type_id')
                     ->whereNull('expense_item_id')
                     ->count();
             });
-            
+
             $itemLevelAllocations = $budgets->sum(function($budget) {
                 return $budget->tranAppropriations
                     ->whereNotNull('expense_item_id')
@@ -1653,9 +2545,7 @@ class AppropriationController extends Controller
         }
     }
 
-    /**
-     * Debug endpoint to troubleshoot dashboard issues
-     */
+    //Debug endpoint to troubleshoot dashboard issues
     public function getDashboardDebug(Request $request)
     {
         try {
@@ -1668,29 +2558,29 @@ class AppropriationController extends Controller
             ], 401);
         }
         $barangayId = $user->barangay_id;
-            
+
             \Log::info('Dashboard debug requested for user: ' . $user->id . ', barangay: ' . $barangayId);
-            
+
             // Check fiscal years
             $fiscalYears = LibFiscalYear::where('barangay_id', $barangayId)->get();
             \Log::info('Found ' . $fiscalYears->count() . ' fiscal years for barangay ' . $barangayId);
-            
+
             // Check budgets
             $budgets = Budget::where('barangay_id', $barangayId)->get();
             \Log::info('Found ' . $budgets->count() . ' budgets for barangay ' . $barangayId);
-            
+
             // Check expense classes
             $expenseClasses = LibExpenseClass::where('barangay_id', $barangayId)->orderBy('order')->get();
             \Log::info('Found ' . $expenseClasses->count() . ' expense classes for barangay ' . $barangayId);
-            
+
             // Check appropriations
             $appropriations = TranAppropriation::where('barangay_id', $barangayId)->get();
             \Log::info('Found ' . $appropriations->count() . ' appropriations for barangay ' . $barangayId);
-            
+
             // Check disbursements
             $disbursements = \App\Models\Disbursement::where('barangay_id', $barangayId)->get();
             \Log::info('Found ' . $disbursements->count() . ' disbursements for barangay ' . $barangayId);
-            
+
             return response()->json([
                 'status' => true,
                 'data' => [
@@ -1731,7 +2621,7 @@ class AppropriationController extends Controller
                     })
                 ]
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('Dashboard debug error: ' . $e->getMessage());
             return response()->json([
@@ -1778,7 +2668,7 @@ class AppropriationController extends Controller
         }
 
         $appropriations = $query->get();
-        
+
         // Debug logging
         \Log::info('Budget type filter: ' . $budgetType);
         \Log::info('Total appropriations found: ' . $appropriations->count());
@@ -1793,14 +2683,14 @@ class AppropriationController extends Controller
 
         // Group appropriations by expense hierarchy (class, type, item)
         $groupedAppropriations = [];
-        
+
         foreach ($appropriations as $appropriation) {
             // Create a unique key for grouping (including subitem)
-            $key = $appropriation->expense_class_id . '_' . 
-                   ($appropriation->expense_type_id ?? 'null') . '_' . 
+            $key = $appropriation->expense_class_id . '_' .
+                   ($appropriation->expense_type_id ?? 'null') . '_' .
                    ($appropriation->expense_item_id ?? 'null') . '_' .
                    ($appropriation->expense_sub_item_id ?? 'null');
-            
+
             if (!isset($groupedAppropriations[$key])) {
                 // Build account name including subitem
                 $accountParts = [];
@@ -1816,7 +2706,7 @@ class AppropriationController extends Controller
                 if ($appropriation->expenseSubItem) {
                     $accountParts[] = $appropriation->expenseSubItem->name;
                 }
-                
+
                 $accountName = implode(' > ', $accountParts);
 
                 // Get all appropriations with the same expense hierarchy (including subitem)
@@ -1899,7 +2789,7 @@ class AppropriationController extends Controller
         }
 
         $appropriations = $query->get();
-        
+
         \Log::info('Filtered appropriations for unused expenses calculation:', [
             'total_appropriations' => $appropriations->count(),
             'appropriation_ids' => $appropriations->pluck('id')->toArray(),
@@ -1917,13 +2807,13 @@ class AppropriationController extends Controller
 
         // Group by expense hierarchy and calculate unused amounts
         $groupedExpenses = [];
-        
+
         foreach ($appropriations as $appropriation) {
-            $key = $appropriation->expense_class_id . '_' . 
-                   ($appropriation->expense_type_id ?? 'null') . '_' . 
-                   ($appropriation->expense_item_id ?? 'null') . '_' . 
+            $key = $appropriation->expense_class_id . '_' .
+                   ($appropriation->expense_type_id ?? 'null') . '_' .
+                   ($appropriation->expense_item_id ?? 'null') . '_' .
                    ($appropriation->expense_sub_item_id ?? 'null');
-            
+
             if (!isset($groupedExpenses[$key])) {
                 // Build account name
                 $accountParts = [];
@@ -1939,7 +2829,7 @@ class AppropriationController extends Controller
                 if ($appropriation->expenseSubItem) {
                     $accountParts[] = $appropriation->expenseSubItem->name;
                 }
-                
+
                 $accountName = implode(' > ', $accountParts);
 
                 // Get all appropriations with the same expense hierarchy
@@ -1952,7 +2842,7 @@ class AppropriationController extends Controller
 
                 // Calculate total appropriated amount (current sum of appropriation amounts)
                 $totalAppropriated = $matchingAppropriations->sum('amount');
-                
+
                 // Calculate total disbursed amount from expense details
                 $totalDisbursed = 0;
                 foreach ($matchingAppropriations as $appr) {
@@ -2060,7 +2950,7 @@ class AppropriationController extends Controller
             $fiscalYear = LibFiscalYear::where('year', $request->year)
                 ->where('barangay_id', $barangayId)
                 ->first();
-            
+
             if (!$fiscalYear) {
                 throw new \Exception('Fiscal year not found for year: ' . $request->year);
             }
@@ -2123,7 +3013,7 @@ class AppropriationController extends Controller
             // Transfer funds from source appropriations to supplemental budget
             foreach ($request->expense_sources as $source) {
                 $sourceAppropriation = TranAppropriation::find($source['appropriation_id']);
-                
+
                 if (!$sourceAppropriation) {
                     throw new \Exception('Source appropriation not found with ID: ' . $source['appropriation_id']);
                 }
@@ -2143,7 +3033,7 @@ class AppropriationController extends Controller
 
                 // Reduce the source appropriation amount
                 $sourceAppropriation->decrement('amount', $source['amount']);
-                
+
                 // Log after reduction
                 \Log::info('After reducing source appropriation:', [
                     'source_id' => $sourceAppropriation->id,

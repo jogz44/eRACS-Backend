@@ -17,32 +17,44 @@ class ContAppropriation extends Model
         'unappropriated_amount',
         'continued_date',
         'status',
-        'user_id'
+        'user_id',
     ];
 
     protected $casts = [
         'continued_date' => 'date',
         'appropriation_amount' => 'decimal:2',
-        'unappropriated_amount' => 'decimal:2'
+        'unappropriated_amount' => 'decimal:2',
     ];
 
-    public function continuingAccounts()
+    public function continuingAccounts(): HasMany
     {
-        return $this->hasMany(ContApproAccounts::class, 'contAppropriation_id');
+        return $this->hasMany(
+            ContApproAccounts::class,
+            'contAppropriation_id'
+        );
     }
 
-    public function barangay()
+    public function barangay(): BelongsTo
     {
-        return $this->belongsTo(Barangay::class);
+        return $this->belongsTo(
+            Barangay::class,
+            'barangay_id'
+        );
     }
 
-    public function fiscalYear()
+    public function fiscalYear(): BelongsTo
     {
-        return $this->belongsTo(LibFiscalYear::class);
+        return $this->belongsTo(
+            LibFiscalYear::class,
+            'fiscal_year_id'
+        );
     }
 
-    public function user()
+    public function user(): BelongsTo
     {
-        return $this->belongsTo(BarangayUser::class);
+        return $this->belongsTo(
+            BarangayUser::class,
+            'user_id'
+        );
     }
 }
