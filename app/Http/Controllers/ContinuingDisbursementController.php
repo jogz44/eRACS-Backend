@@ -29,6 +29,9 @@ class ContinuingDisbursementController extends Controller
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubItem',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubType',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubSubType',
                 'deductions',
                 'bankCheques.bank',
             ]);
@@ -65,12 +68,41 @@ class ContinuingDisbursementController extends Controller
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
                     return [
                         'id' => $detail->id,
+
+                        // Continuing appropriation account ID
                         'accountId' => $detail->cont_appro_account_id,
+
                         'accountName' => $this->getAccountNameFromContApproAccountId(
                             $detail->cont_appro_account_id
                         ),
+
                         'particular' => $detail->particulars,
                         'amount' => $detail->amount,
+
+                        // Full expense hierarchy
+                        'expense_class_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_class_id,
+
+                        'expense_type_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_type_id,
+
+                        'expense_item_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_item_id,
+
+                        'expense_sub_item_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_sub_item_id,
+
+                        'expense_sub_type_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_sub_type_id,
+
+                        'expense_sub_sub_type_id' => optional(
+                            $detail->contApproAccount?->transactionAppropriation
+                        )->expense_sub_sub_type_id,
                     ];
                 }),
 
@@ -306,6 +338,9 @@ class ContinuingDisbursementController extends Controller
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
                 'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubItem',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubType',
+                'expenseDetails.contApproAccount.transactionAppropriation.expenseSubSubType',
                 'deductions',
                 'bankCheques.bank',
             ]);
@@ -342,12 +377,41 @@ class ContinuingDisbursementController extends Controller
 
                 return [
                     'id' => $detail->id,
+
+                    // Continuing appropriation account ID
                     'accountId' => $detail->cont_appro_account_id,
+
                     'accountName' => $this->getAccountNameFromContApproAccountId(
                         $detail->cont_appro_account_id
                     ),
+
                     'particular' => $detail->particulars,
                     'amount' => $detail->amount,
+
+                    // Full expense hierarchy
+                    'expense_class_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_class_id,
+
+                    'expense_type_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_type_id,
+
+                    'expense_item_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_item_id,
+
+                    'expense_sub_item_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_sub_item_id,
+
+                    'expense_sub_type_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_sub_type_id,
+
+                    'expense_sub_sub_type_id' => optional(
+                        $detail->contApproAccount?->transactionAppropriation
+                    )->expense_sub_sub_type_id,
                 ];
 
             }),
@@ -926,15 +990,47 @@ class ContinuingDisbursementController extends Controller
 
     private function getAccountNameFromContApproAccountId($contApproAccountId)
     {
-        $contAccount = ContApproAccounts::with(['transactionAppropriation.expenseClass', 'transactionAppropriation.expenseType', 'transactionAppropriation.expenseItem'])->find($contApproAccountId);
+        $contAccount = ContApproAccounts::with([
+            'transactionAppropriation.expenseClass',
+            'transactionAppropriation.expenseType',
+            'transactionAppropriation.expenseItem',
+            'transactionAppropriation.expenseSubItem',
+            'transactionAppropriation.expenseSubType',
+            'transactionAppropriation.expenseSubSubType',
+        ])->find($contApproAccountId);
+
         if (!$contAccount || !$contAccount->transactionAppropriation) {
             return 'Unknown Account';
         }
+
         $appr = $contAccount->transactionAppropriation;
+
         $parts = [];
-        if ($appr->expenseClass) { $parts[] = $appr->expenseClass->name; }
-        if ($appr->expenseType) { $parts[] = $appr->expenseType->name; }
-        if ($appr->expenseItem) { $parts[] = $appr->expenseItem->name; }
+
+        if ($appr->expenseClass) {
+            $parts[] = $appr->expenseClass->name;
+        }
+
+        if ($appr->expenseType) {
+            $parts[] = $appr->expenseType->name;
+        }
+
+        if ($appr->expenseItem) {
+            $parts[] = $appr->expenseItem->name;
+        }
+
+        if ($appr->expenseSubItem) {
+            $parts[] = $appr->expenseSubItem->name;
+        }
+
+        if ($appr->expenseSubType) {
+            $parts[] = $appr->expenseSubType->name;
+        }
+
+        if ($appr->expenseSubSubType) {
+            $parts[] = $appr->expenseSubSubType->name;
+        }
+
         return implode(' > ', $parts) ?: 'Unknown Account';
     }
 }

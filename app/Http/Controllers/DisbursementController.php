@@ -266,10 +266,12 @@ class DisbursementController extends Controller
             'expenses.*.bank_id' => 'required|exists:lib_banks,id',
             'expenses.*.cheque_number' => 'required|string',
             'expenses.*.cheque_date' => 'nullable|date',
-            'expenses.*.expense_sub_item_id' => 'nullable|exists:lib_expense_sub_items,id',
             'expenses.*.expense_class_id' => 'nullable|exists:lib_expense_classes,id',
             'expenses.*.expense_type_id' => 'nullable|exists:lib_expense_types,id',
             'expenses.*.expense_item_id' => 'nullable|exists:lib_expense_items,id',
+            'expenses.*.expense_sub_item_id' => 'nullable|exists:lib_expense_sub_items,id',
+            'expenses.*.expense_sub_type_id' => 'nullable|exists:lib_expense_sub_types,id',
+            'expenses.*.expense_sub_sub_type_id' => 'nullable|exists:lib_expense_sub_sub_types,id',
 
             'bank_cheques' => 'nullable|array',
             'bank_cheques.*.bank_id' => 'required|exists:lib_banks,id',
@@ -595,98 +597,97 @@ class DisbursementController extends Controller
 
                         /*
                         |--------------------------------------------------------------------------
-                        | FIND APPROPRIATION
+                        | FIND EXACT APPROPRIATION
                         |--------------------------------------------------------------------------
                         */
 
-                        $appropriationQuery = TranAppropriation::where(
-                            'barangay_id',
-                            $barangayId
-                        )
-                            ->where('status', 'committed');
+                        $appropriation = TranAppropriation::query()
+                            ->where('id', $expense['accountId'])
+                            ->where('barangay_id', $barangayId)
+                            ->where('status', 'committed')
+                            ->first();
 
-
-                        if (!empty($expense['expense_sub_item_id'])) {
-
-                            $appropriationQuery->where(
-                                'expense_sub_item_id',
-                                $expense['expense_sub_item_id']
-                            );
-
-                        } elseif (!empty($expense['expense_item_id'])) {
-
-                            $appropriationQuery->where(
-                                'expense_item_id',
-                                $expense['expense_item_id']
-                            );
-
-                        } elseif (!empty($expense['expense_type_id'])) {
-
-                            $appropriationQuery
-                                ->whereNull('expense_item_id')
-                                ->where(
-                                    'expense_type_id',
-                                    $expense['expense_type_id']
-                                );
-
-                        } elseif (!empty($expense['expense_class_id'])) {
-
-                            $appropriationQuery
-                                ->whereNull('expense_item_id')
-                                ->whereNull('expense_type_id')
-                                ->where(
-                                    'expense_class_id',
-                                    $expense['expense_class_id']
-                                );
-                        }
-
-
-                        $appropriation = $appropriationQuery->first();
-
-
-                        if ($appropriation) {
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | CREATE EXPENSE DETAIL
-                            |--------------------------------------------------------------------------
-                            */
-
-                            TranExpenseDetail::create([
-                                'disbursement_id' => $disbursement->id,
-                                'appropriation_id' => $appropriation->id,
-                                'amount'          => $expense['amount'],
-                                'particulars'     => $expense['particular'] ?? '',
-                                'cheque_number'   => $expense['cheque_number'] ?? null,
-                                'bank_id'         => $expense['bank_id'] ?? null,
-                            ]);
-
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | PREPARE LOG
-                            |--------------------------------------------------------------------------
-                            */
-
-                            $accountName =
-                                $this->getAccountNameFromAppropriationId(
-                                    $appropriation->id
-                                );
-
-
-                            $logExpenseLines[] = sprintf(
-                                'Disbursed Expense %s with the amount ₱%s%s',
-                                $accountName,
-                                number_format(
-                                    (float) $expense['amount'],
-                                    2
-                                ),
-                                isset($expense['particular']) &&
-                                $expense['particular'] !== ''
-                                    ? ' for "' . $expense['particular'] . '"'
-                                    : ''
+                        if (!$appropriation) {
+                            throw new \Exception(
+                                'Appropriation not found or does not belong to this barangay. ' .
+                                'Account ID: ' . ($expense['accountId'] ?? 'NULL')
                             );
                         }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | VERIFY COMPLETE HIERARCHY
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $hierarchyFields = [
+                            'expense_class_id',
+                            'expense_type_id',
+                            'expense_item_id',
+                            'expense_sub_item_id',
+                            'expense_sub_type_id',
+                            'expense_sub_sub_type_id',
+                        ];
+
+                        foreach ($hierarchyFields as $field) {
+
+                            $requestedValue = $expense[$field] ?? null;
+                            $appropriationValue = $appropriation->{$field};
+
+                            /*
+                            * Normalize NULL / empty values.
+                            */
+                            $requestedValue = (
+                                $requestedValue === '' ||
+                                $requestedValue === null
+                            )
+                                ? null
+                                : (int) $requestedValue;
+
+                            $appropriationValue = (
+                                $appropriationValue === '' ||
+                                $appropriationValue === null
+                            )
+                                ? null
+                                : (int) $appropriationValue;
+
+                            if ($requestedValue !== $appropriationValue) {
+
+                                throw new \Exception(
+                                    'Expense hierarchy does not match the selected appropriation. ' .
+                                    'Account ID: ' . $expense['accountId'] .
+                                    ', Field: ' . $field .
+                                    ', Requested: ' . ($requestedValue ?? 'NULL') .
+                                    ', Actual: ' . ($appropriationValue ?? 'NULL')
+                                );
+                            }
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | LOG EXACT MATCH
+                        |--------------------------------------------------------------------------
+                        */
+
+                        \Log::info('REGULAR DISBURSEMENT APPROPRIATION MATCH', [
+                            'account_id' => $expense['accountId'],
+                            'matched_appropriation_id' => $appropriation->id,
+                            'matched_class_id' => $appropriation->expense_class_id,
+                            'matched_type_id' => $appropriation->expense_type_id,
+                            'matched_item_id' => $appropriation->expense_item_id,
+                            'matched_sub_item_id' => $appropriation->expense_sub_item_id,
+                            'matched_sub_type_id' => $appropriation->expense_sub_type_id,
+                            'matched_sub_sub_type_id' => $appropriation->expense_sub_sub_type_id,
+                        ]);
+
+                        TranExpenseDetail::create([
+                            'disbursement_id' => $disbursement->id,
+                            'appropriation_id' => $appropriation->id,
+                            'amount' => $expense['amount'],
+                            'particulars' => $expense['particular'] ?? '',
+                            'cheque_number' => $expense['cheque_number'] ?? null,
+                            'bank_id' => $expense['bank_id'] ?? null,
+                        ]);
                     }
                 }
 
@@ -1023,17 +1024,6 @@ class DisbursementController extends Controller
                     // Find the appropriate appropriation based on expense hierarchy
                     $appropriationQuery = TranAppropriation::where('barangay_id', $barangayId)
                         ->where('status', 'committed');
-
-                    // if (isset($expense['expense_item_id'])) {
-                    //     $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-                    // } elseif (isset($expense['expense_type_id'])) {
-                    //     $appropriationQuery->whereNull('expense_item_id')
-                    //         ->where('expense_type_id', $expense['expense_type_id']);
-                    // } elseif (isset($expense['expense_class_id'])) {
-                    //     $appropriationQuery->whereNull('expense_item_id')
-                    //         ->whereNull('expense_type_id')
-                    //         ->where('expense_class_id', $expense['expense_class_id']);
-                    // }
 
                     if (!empty($expense['expense_sub_item_id'])) {
                         $appropriationQuery->where('expense_sub_item_id', $expense['expense_sub_item_id']);
@@ -1390,7 +1380,10 @@ class DisbursementController extends Controller
                 'expenseDetails.appropriation.expenseClass',
                 'expenseDetails.appropriation.expenseType',
                 'expenseDetails.appropriation.expenseItem',
-                'expenseDetails.appropriation.expenseSubItem']);
+                'expenseDetails.appropriation.expenseSubItem',
+                'expenseDetails.appropriation.expenseSubType',
+                'expenseDetails.appropriation.expenseSubSubType',
+            ]);
 
             // If user is authenticated and has barangay_id, filter by it
             if ($user && isset($user->barangay_id)) {
@@ -1408,7 +1401,16 @@ class DisbursementController extends Controller
 
             // Case 1: this record is a reimbursement (it has a ref_dv_number)
             if ($disbursement->ref_dv_number) {
-                $original = Disbursement::with(['bank', 'cheque.booklet', 'expenseDetails.appropriation.expenseClass', 'expenseDetails.appropriation.expenseType', 'expenseDetails.appropriation.expenseItem', 'expenseDetails.appropriation.expenseSubItem'])
+                $original = Disbursement::with([
+                    'bank',
+                    'cheque.booklet',
+                    'expenseDetails.appropriation.expenseClass',
+                    'expenseDetails.appropriation.expenseType',
+                    'expenseDetails.appropriation.expenseItem',
+                    'expenseDetails.appropriation.expenseSubItem',
+                    'expenseDetails.appropriation.expenseSubType',
+                    'expenseDetails.appropriation.expenseSubSubType',
+                ])
                     ->when($user && isset($user->barangay_id), function ($q) use ($user) {
                         $q->where('barangay_id', $user->barangay_id);
                     })
@@ -1422,7 +1424,16 @@ class DisbursementController extends Controller
             }
             // Case 2: this record is the original (another record references it)
             elseif (
-                $linked = Disbursement::with(['bank', 'cheque.booklet', 'expenseDetails.appropriation.expenseClass', 'expenseDetails.appropriation.expenseType', 'expenseDetails.appropriation.expenseItem', 'expenseDetails.appropriation.expenseSubItem'])
+                $linked = Disbursement::with([
+                    'bank',
+                    'cheque.booklet',
+                    'expenseDetails.appropriation.expenseClass',
+                    'expenseDetails.appropriation.expenseType',
+                    'expenseDetails.appropriation.expenseItem',
+                    'expenseDetails.appropriation.expenseSubItem',
+                    'expenseDetails.appropriation.expenseSubType',
+                    'expenseDetails.appropriation.expenseSubSubType',
+                ])
                 ->when($user && isset($user->barangay_id), function ($q) use ($user) {
                     $q->where('barangay_id', $user->barangay_id);
                 })
@@ -1462,19 +1473,36 @@ class DisbursementController extends Controller
                 'dv_amount' => $disbursement->dv_amount,
                 'status' => $disbursement->status,
                 'expenses' => $disbursement->expenseDetails->map(function ($detail) {
+                    $appropriation = $detail->appropriation;
+
                     return [
                         'id' => $detail->id,
-                        'accountId' => $detail->appropriation_id,
-                        'account_name' => '' . $detail->appropriation->expenseClass->name
-                            . ($detail->appropriation->expenseType ? ' > ' . $detail->appropriation->expenseType->name : '')
-                            . ($detail->appropriation->expenseItem ? ' > ' . $detail->appropriation->expenseItem->name : '')
-                            . ($detail->appropriation->expenseSubItem ? ' > ' . $detail->appropriation->expenseSubItem->name : ''),
+
+                        // This is tran_appropriations.id
+                        'accountId' => $appropriation?->id,
+
+                        // Complete six-level hierarchy
+                        'account_name' => collect([
+                            $appropriation?->expenseClass?->name,
+                            $appropriation?->expenseType?->name,
+                            $appropriation?->expenseItem?->name,
+                            $appropriation?->expenseSubItem?->name,
+                            $appropriation?->expenseSubType?->name,
+                            $appropriation?->expenseSubSubType?->name,
+                        ])
+                            ->filter(fn ($name) => filled($name))
+                            ->implode(' > '),
+
                         'amount' => $detail->amount,
                         'particular' => $detail->particulars,
-                        'expense_class_id' => $detail->appropriation->expense_class_id ?? null,
-                        'expense_type_id' => $detail->appropriation->expense_type_id ?? null,
-                        'expense_item_id' => $detail->appropriation->expense_item_id ?? null,
-                        'expense_sub_item_id' => $detail->appropriation->expense_sub_item_id ?? null,
+
+                        // Complete hierarchy IDs
+                        'expense_class_id' => $appropriation?->expense_class_id,
+                        'expense_type_id' => $appropriation?->expense_type_id,
+                        'expense_item_id' => $appropriation?->expense_item_id,
+                        'expense_sub_item_id' => $appropriation?->expense_sub_item_id,
+                        'expense_sub_type_id' => $appropriation?->expense_sub_type_id,
+                        'expense_sub_sub_type_id' => $appropriation?->expense_sub_sub_type_id,
                     ];
                 }),
                 'created_at' => $disbursement->created_at,
@@ -1505,19 +1533,32 @@ class DisbursementController extends Controller
                     'dv_amount' => $reimbursement->dv_amount,
                     'status' => $reimbursement->status,
                     'expenses' => $reimbursement->expenseDetails->map(function ($detail) {
+                        $appropriation = $detail->appropriation;
+
                         return [
                             'id' => $detail->id,
-                            'accountId' => $detail->appropriation_id,
-                            'account_name' => '' . $detail->appropriation->expenseClass->name
-                                . ($detail->appropriation->expenseType ? ' > ' . $detail->appropriation->expenseType->name : '')
-                                . ($detail->appropriation->expenseItem ? ' > ' . $detail->appropriation->expenseItem->name : '')
-                                . ($detail->appropriation->expenseSubItem ? ' > ' . $detail->appropriation->expenseSubItem->name : ''),
+                            'accountId' => $appropriation?->id,
+
+                            'account_name' => collect([
+                                $appropriation?->expenseClass?->name,
+                                $appropriation?->expenseType?->name,
+                                $appropriation?->expenseItem?->name,
+                                $appropriation?->expenseSubItem?->name,
+                                $appropriation?->expenseSubType?->name,
+                                $appropriation?->expenseSubSubType?->name,
+                            ])
+                                ->filter(fn ($name) => filled($name))
+                                ->implode(' > '),
+
                             'amount' => $detail->amount,
                             'particular' => $detail->particulars,
-                            'expense_class_id' => $detail->appropriation->expense_class_id ?? null,
-                            'expense_type_id' => $detail->appropriation->expense_type_id ?? null,
-                            'expense_item_id' => $detail->appropriation->expense_item_id ?? null,
-                            'expense_sub_item_id' => $detail->appropriation->expense_sub_item_id ?? null,
+
+                            'expense_class_id' => $appropriation?->expense_class_id,
+                            'expense_type_id' => $appropriation?->expense_type_id,
+                            'expense_item_id' => $appropriation?->expense_item_id,
+                            'expense_sub_item_id' => $appropriation?->expense_sub_item_id,
+                            'expense_sub_type_id' => $appropriation?->expense_sub_type_id,
+                            'expense_sub_sub_type_id' => $appropriation?->expense_sub_sub_type_id,
                         ];
                     }),
                     'created_at' => $reimbursement->created_at,
@@ -1546,18 +1587,22 @@ class DisbursementController extends Controller
             'payee'         => 'required_if:cancel,true|string',
             'payee2'        => 'required_if:cancel,true|string',
 
-
-            'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
-            'dv_number' => 'required|string',
-            'dv_amount' => 'required|numeric|min:0',
-            'expenses' => 'array',
+            'date'          => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
+            'dv_number'     => 'required|string',
+            'dv_amount'     => 'required|numeric|min:0',
+            'expenses'      => 'array',
             'expenses.*.id' => 'nullable|exists:tran_expense_details,id',
-            'expenses.*.accountId' => 'required|integer',
-            'expenses.*.amount' => 'required|numeric|min:0',
-            'expenses.*.particular' => 'nullable|string',
-            'expenses.*.expense_class_id' => 'nullable|exists:lib_expense_classes,id',
-            'expenses.*.expense_type_id' => 'nullable|exists:lib_expense_types,id',
-            'expenses.*.expense_item_id' => 'nullable|exists:lib_expense_items,id',
+
+            // accountId MUST be tran_appropriations.id
+            'expenses.*.accountId'               => 'required|integer|exists:tran_appropriations,id',
+            'expenses.*.amount'                  => 'required|numeric|min:0',
+            'expenses.*.particular'              => 'nullable|string',
+            'expenses.*.expense_class_id'        => 'nullable|integer|exists:lib_expense_classes,id',
+            'expenses.*.expense_type_id'         => 'nullable|integer|exists:lib_expense_types,id',
+            'expenses.*.expense_item_id'         => 'nullable|integer|exists:lib_expense_items,id',
+            'expenses.*.expense_sub_item_id'     => 'nullable|integer|exists:lib_expense_sub_items,id',
+            'expenses.*.expense_sub_type_id'     => 'nullable|integer|exists:lib_expense_sub_types,id',
+            'expenses.*.expense_sub_sub_type_id' => 'nullable|integer|exists:lib_expense_sub_sub_types,id',
         ]);
 
         try {
@@ -1670,22 +1715,79 @@ class DisbursementController extends Controller
 
                 // Process each expense
                 foreach ($request->expenses as $expense) {
-                    // Find the appropriate appropriation based on expense hierarchy
-                    $appropriationQuery = TranAppropriation::where('barangay_id', $user->barangay_id)
-                        ->where('status', 'committed');
+                    // ---------------------------------------------------------
+                    // Find the EXACT appropriation selected by the user.
+                    //
+                    // accountId is tran_appropriations.id.
+                    // Do NOT search by only one hierarchy level because multiple
+                    // appropriations can have the same class/type/item.
+                    // ---------------------------------------------------------
+                    $appropriation = TranAppropriation::query()
+                        ->where('id', $expense['accountId'])
+                        ->where('barangay_id', $user->barangay_id)
+                        ->where('status', 'committed')
+                        ->first();
 
-                    if (isset($expense['expense_item_id'])) {
-                        $appropriationQuery->where('expense_item_id', $expense['expense_item_id']);
-                    } elseif (isset($expense['expense_type_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->where('expense_type_id', $expense['expense_type_id']);
-                    } elseif (isset($expense['expense_class_id'])) {
-                        $appropriationQuery->whereNull('expense_item_id')
-                            ->whereNull('expense_type_id')
-                            ->where('expense_class_id', $expense['expense_class_id']);
+                    if (!$appropriation) {
+                        throw new \Exception(
+                            'Appropriation not found or does not belong to this barangay. ' .
+                            'Account ID: ' . ($expense['accountId'] ?? 'NULL')
+                        );
                     }
 
-                    $appropriation = $appropriationQuery->first();
+                    // ---------------------------------------------------------
+                    // Verify that the hierarchy sent by the frontend matches
+                    // the actual tran_appropriations record.
+                    // ---------------------------------------------------------
+                    $hierarchyFields = [
+                        'expense_class_id',
+                        'expense_type_id',
+                        'expense_item_id',
+                        'expense_sub_item_id',
+                        'expense_sub_type_id',
+                        'expense_sub_sub_type_id',
+                    ];
+
+                    foreach ($hierarchyFields as $field) {
+                        $requestedValue = $expense[$field] ?? null;
+                        $actualValue = $appropriation->{$field};
+
+                        // Normalize empty strings / null
+                        $requestedValue = (
+                            $requestedValue === '' || $requestedValue === null
+                        )
+                            ? null
+                            : (int) $requestedValue;
+
+                        $actualValue = (
+                            $actualValue === '' || $actualValue === null
+                        )
+                            ? null
+                            : (int) $actualValue;
+
+                        if ($requestedValue !== $actualValue) {
+                            throw new \Exception(
+                                'Expense hierarchy does not match the selected appropriation. ' .
+                                'Account ID: ' . $expense['accountId'] .
+                                ', Field: ' . $field .
+                                ', Requested: ' . ($requestedValue ?? 'NULL') .
+                                ', Actual: ' . ($actualValue ?? 'NULL')
+                            );
+                        }
+                    }
+
+                    \Log::info('REGULAR DISBURSEMENT EDIT APPROPRIATION MATCH', [
+                        'expense_detail_id' => $expense['id'] ?? null,
+                        'account_id' => $expense['accountId'],
+                        'appropriation_id' => $appropriation->id,
+
+                        'expense_class_id' => $appropriation->expense_class_id,
+                        'expense_type_id' => $appropriation->expense_type_id,
+                        'expense_item_id' => $appropriation->expense_item_id,
+                        'expense_sub_item_id' => $appropriation->expense_sub_item_id,
+                        'expense_sub_type_id' => $appropriation->expense_sub_type_id,
+                        'expense_sub_sub_type_id' => $appropriation->expense_sub_sub_type_id,
+                    ]);
 
                     if ($appropriation) {
                         if (isset($expense['id']) && in_array($expense['id'], $existingExpenseDetailIds)) {
@@ -1838,27 +1940,65 @@ class DisbursementController extends Controller
         $request->validate([
             'liquidated_amount' => 'required|numeric|min:0',
         ]);
-        $user = $request->user();
-        $disbursement = Disbursement::findOrFail($id);
-        $previous = (float) ($disbursement->liquidated_amount ?? 0);
-        $disbursement->status = 'Liquidated';
-        $disbursement->liquidated_amount = $request->liquidated_amount;
-        $disbursement->liquidated_at = now();
-        $disbursement->save();
 
-        // Log liquidation via direct endpoint
-        AdminAuthController::logUserAction(
-            $user,
-            'Liquidated Disbursement',
-            sprintf(
-                '#%s liquidated amount ₱%s (prev ₱%s)',
-                $disbursement->dv_number,
-                number_format((float)$disbursement->liquidated_amount, 2),
-                number_format($previous, 2)
-            )
-        );
+        try {
+            $user = $request->user();
 
-        return response()->json(['status' => true, 'data' => $disbursement]);
+            // Only allow the authenticated barangay to liquidate
+            // its own disbursement.
+            $disbursement = Disbursement::where('id', $id)
+                ->where('barangay_id', $user->barangay_id)
+                ->firstOrFail();
+
+            $liquidatedAmount = (float) $request->liquidated_amount;
+            $dvAmount = (float) $disbursement->dv_amount;
+
+            // Prevent liquidation amount from exceeding the DV amount.
+            if ($liquidatedAmount > $dvAmount) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Liquidated amount cannot exceed the DV amount.',
+                    'dv_amount' => $dvAmount,
+                    'liquidated_amount' => $liquidatedAmount,
+                ], 422);
+            }
+
+            $previous = (float) ($disbursement->liquidated_amount ?? 0);
+
+            $disbursement->status = 'Liquidated';
+            $disbursement->liquidated_amount = $liquidatedAmount;
+            $disbursement->liquidated_at = now();
+            $disbursement->save();
+
+            // Log liquidation
+            AdminAuthController::logUserAction(
+                $user,
+                'Liquidated Disbursement',
+                sprintf(
+                    '#%s liquidated amount ₱%s (prev ₱%s)',
+                    $disbursement->dv_number,
+                    number_format($liquidatedAmount, 2),
+                    number_format($previous, 2)
+                )
+            );
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Disbursement liquidated successfully',
+                'data' => $disbursement,
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error(
+                'Error liquidating disbursement: ' . $e->getMessage()
+            );
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Failed to liquidate disbursement',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 
     // DELETE /api/barangay/disbursements/{id}/or-details/{orDetailId}

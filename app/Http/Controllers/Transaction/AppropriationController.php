@@ -484,7 +484,8 @@ class AppropriationController extends Controller
                             $barangayId,
                             $budgetId,
                             $budgetIds,
-                            $budgetType
+                            $budgetType,
+                            $class
                         ) {
 
                             $typeQuery = TranAppropriation::where(
@@ -538,7 +539,9 @@ class AppropriationController extends Controller
                                         $barangayId,
                                         $budgetId,
                                         $budgetIds,
-                                        $budgetType
+                                        $budgetType,
+                                        $class,
+                                        $type
                                     ) {
 
                                         $itemQuery = TranAppropriation::where(
@@ -594,7 +597,10 @@ class AppropriationController extends Controller
                                                     $barangayId,
                                                     $budgetId,
                                                     $budgetIds,
-                                                    $budgetType
+                                                    $budgetType,
+                                                    $class,
+                                                    $type,
+                                                    $item
                                                 ) {
 
                                                     $subItemQuery =
@@ -651,7 +657,11 @@ class AppropriationController extends Controller
                                                                 $barangayId,
                                                                 $budgetId,
                                                                 $budgetIds,
-                                                                $budgetType
+                                                                $budgetType,
+                                                                $class,
+                                                                $type,
+                                                                $item,
+                                                                $subItem
                                                             ) {
 
                                                                 $subTypeQuery =
@@ -695,9 +705,29 @@ class AppropriationController extends Controller
                                                                         $subType->id
                                                                     );
 
+                                                                $subTypeAppropriationQuery = TranAppropriation::query()
+                                                                    ->where('barangay_id', $barangayId)
+                                                                    ->where('status', 'committed')
+                                                                    ->where('expense_class_id', $class->id)
+                                                                    ->where('expense_type_id', $type->id)
+                                                                    ->where('expense_item_id', $item->id)
+                                                                    ->where('expense_sub_item_id', $subItem->id)
+                                                                    ->where('expense_sub_type_id', $subType->id);
+
+                                                                if ($budgetId) {
+                                                                    $subTypeAppropriationQuery->where('budget_id', $budgetId);
+                                                                } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
+                                                                    $subTypeAppropriationQuery->whereIn('budget_id', $budgetIds);
+                                                                }
+
+                                                                $subTypeAppropriation = $subTypeAppropriationQuery
+                                                                    ->orderByDesc('id')
+                                                                    ->first();
+
                                                                 return [
                                                                     'id' => $subType->id,
                                                                     'name' => $subType->name,
+                                                                    'tran_appropriation_id' => $subTypeAppropriation?->id,
                                                                     'isMainCategory' => false,
                                                                     'amount' => (float) $subTypeAllocatedAmount,
                                                                     'budget_source' => $subTypeBudgetSource,
@@ -708,7 +738,12 @@ class AppropriationController extends Controller
                                                                             $barangayId,
                                                                             $budgetId,
                                                                             $budgetIds,
-                                                                            $budgetType
+                                                                            $budgetType,
+                                                                            $class,
+                                                                            $type,
+                                                                            $item,
+                                                                            $subItem,
+                                                                            $subType
                                                                         ) {
 
                                                                             $subSubTypeQuery =
@@ -752,8 +787,29 @@ class AppropriationController extends Controller
                                                                                     $subSubType->id
                                                                                 );
 
+                                                                            $appropriation = TranAppropriation::query()
+                                                                                ->where('barangay_id', $barangayId)
+                                                                                ->where('status', 'committed')
+                                                                                ->where('expense_class_id', $class->id)
+                                                                                ->where('expense_type_id', $type->id)
+                                                                                ->where('expense_item_id', $item->id)
+                                                                                ->where('expense_sub_item_id', $subItem->id)
+                                                                                ->where('expense_sub_type_id', $subType->id)
+                                                                                ->where('expense_sub_sub_type_id', $subSubType->id);
+
+                                                                            if ($budgetId) {
+                                                                                $appropriation->where('budget_id', $budgetId);
+                                                                            } elseif ($budgetType !== 'all' && !empty($budgetIds)) {
+                                                                                $appropriation->whereIn('budget_id', $budgetIds);
+                                                                            }
+
+                                                                            $appropriation = $appropriation
+                                                                                ->orderByDesc('id')
+                                                                                ->first();
+
                                                                             return [
                                                                                 'id' => $subSubType->id,
+                                                                                'tran_appropriation_id' => $appropriation?->id,
                                                                                 'name' => $subSubType->name,
                                                                                 'isMainCategory' => false,
                                                                                 'amount' => (float) $subSubTypeAllocatedAmount,
