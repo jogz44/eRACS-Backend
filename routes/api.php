@@ -305,7 +305,7 @@ Route::prefix('barangay')->group(function () {
         Route::get('fiscal-years', [AppropriationController::class, 'getFiscalYears']);
 
 
-        // Report routes aka Preview and PDF download by Dan Steve
+        // Report routes
         Route::get('/report/rac', [ReportController::class, 'getRacReport']);
         Route::get('/report/sacb', [ReportController::class, 'getSacbReport']);
 

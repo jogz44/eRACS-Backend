@@ -2688,7 +2688,8 @@ class AppropriationController extends Controller
     }
 
     /**
-     * Get appropriations for augmentation (returns appropriations grouped by expense hierarchy)
+     * Get appropriations for augmentation
+     * Returns appropriations grouped by the complete expense hierarchy
      */
     public function getAppropriationsForAugmentation(Request $request)
     {
@@ -2702,106 +2703,366 @@ class AppropriationController extends Controller
         $status = $request->status ?? 'committed';
         $budgetType = $request->input('budget_type', 'all');
 
-        $query = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem', 'expenseSubItem', 'budget'])
+        /*
+        * Load the complete six-level hierarchy.
+        */
+        $query = TranAppropriation::with([
+            'expenseClass',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+            'budget',
+        ])
             ->where('barangay_id', $barangayId)
             ->where('status', $status);
 
+        /*
+        * Filter by fiscal year.
+        */
         if ($request->fiscal_year_id) {
-            $query->whereHas('budget', function($q) use ($request) {
-                $q->where('fiscal_year_id', $request->fiscal_year_id);
+            $query->whereHas('budget', function ($q) use ($request) {
+                $q->where(
+                    'fiscal_year_id',
+                    $request->fiscal_year_id
+                );
             });
         }
 
-        // Add budget type filtering
+        /*
+        * Filter by budget type.
+        */
         if ($budgetType !== 'all') {
-            $query->whereHas('budget', function($q) use ($budgetType) {
+            $query->whereHas('budget', function ($q) use ($budgetType) {
                 if ($budgetType === 'annual') {
-                    $q->where('description', 'like', '%annual%');
+                    $q->where(
+                        'description',
+                        'like',
+                        '%annual%'
+                    );
                 } elseif ($budgetType === 'supplemental') {
-                    $q->where('description', 'like', '%supplemental%');
+                    $q->where(
+                        'description',
+                        'like',
+                        '%supplemental%'
+                    );
                 }
             });
         }
 
-        $appropriations = $query->get();
+        $appropriations = $query
+            ->orderBy('id')
+            ->get();
 
-        // Debug logging
-        \Log::info('Budget type filter: ' . $budgetType);
-        \Log::info('Total appropriations found: ' . $appropriations->count());
-        \Log::info('Appropriations with budget info:', $appropriations->map(function($app) {
-            return [
-                'id' => $app->id,
-                'budget_id' => $app->budget_id,
-                'budget_description' => $app->budget ? $app->budget->description : 'No budget',
-                'amount' => $app->amount
-            ];
-        })->toArray());
+        /*
+        * Debug logging.
+        */
+        \Log::info(
+            'Budget type filter: ' . $budgetType
+        );
 
-        // Group appropriations by expense hierarchy (class, type, item)
+        \Log::info(
+            'Total appropriations found: ' .
+            $appropriations->count()
+        );
+
+        \Log::info(
+            'Appropriations with budget info:',
+            $appropriations->map(function ($app) {
+                return [
+                    'id' => $app->id,
+                    'budget_id' => $app->budget_id,
+                    'budget_description' =>
+                        $app->budget
+                            ? $app->budget->description
+                            : 'No budget',
+                    'amount' => $app->amount,
+
+                    'expense_class_id' =>
+                        $app->expense_class_id,
+
+                    'expense_type_id' =>
+                        $app->expense_type_id,
+
+                    'expense_item_id' =>
+                        $app->expense_item_id,
+
+                    'expense_sub_item_id' =>
+                        $app->expense_sub_item_id,
+
+                    'expense_sub_type_id' =>
+                        $app->expense_sub_type_id,
+
+                    'expense_sub_sub_type_id' =>
+                        $app->expense_sub_sub_type_id,
+                ];
+            })->toArray()
+        );
+
+        /*
+        * Group appropriations using ALL SIX hierarchy levels.
+        */
         $groupedAppropriations = [];
 
         foreach ($appropriations as $appropriation) {
-            // Create a unique key for grouping (including subitem)
-            $key = $appropriation->expense_class_id . '_' .
-                   ($appropriation->expense_type_id ?? 'null') . '_' .
-                   ($appropriation->expense_item_id ?? 'null') . '_' .
-                   ($appropriation->expense_sub_item_id ?? 'null');
 
+            /*
+            * Normalize NULL values so that:
+            *
+            * null != 0
+            * null != ''
+            *
+            * and each hierarchy remains distinct.
+            */
+            $classId =
+                $appropriation->expense_class_id ?? 'null';
+
+            $typeId =
+                $appropriation->expense_type_id ?? 'null';
+
+            $itemId =
+                $appropriation->expense_item_id ?? 'null';
+
+            $subItemId =
+                $appropriation->expense_sub_item_id ?? 'null';
+
+            $subTypeId =
+                $appropriation->expense_sub_type_id ?? 'null';
+
+            $subSubTypeId =
+                $appropriation->expense_sub_sub_type_id ?? 'null';
+
+            /*
+            * Complete six-level grouping key.
+            */
+            $key = implode('_', [
+                $classId,
+                $typeId,
+                $itemId,
+                $subItemId,
+                $subTypeId,
+                $subSubTypeId,
+            ]);
+
+            /*
+            * Create group only once.
+            */
             if (!isset($groupedAppropriations[$key])) {
-                // Build account name including subitem
+
+                /*
+                * Build complete account name.
+                */
                 $accountParts = [];
+
                 if ($appropriation->expenseClass) {
-                    $accountParts[] = $appropriation->expenseClass->name;
+                    $accountParts[] =
+                        $appropriation->expenseClass->name;
                 }
+
                 if ($appropriation->expenseType) {
-                    $accountParts[] = $appropriation->expenseType->name;
+                    $accountParts[] =
+                        $appropriation->expenseType->name;
                 }
+
                 if ($appropriation->expenseItem) {
-                    $accountParts[] = $appropriation->expenseItem->name;
+                    $accountParts[] =
+                        $appropriation->expenseItem->name;
                 }
+
                 if ($appropriation->expenseSubItem) {
-                    $accountParts[] = $appropriation->expenseSubItem->name;
+                    $accountParts[] =
+                        $appropriation->expenseSubItem->name;
                 }
 
-                $accountName = implode(' > ', $accountParts);
+                if ($appropriation->expenseSubType) {
+                    $accountParts[] =
+                        $appropriation->expenseSubType->name;
+                }
 
-                // Get all appropriations with the same expense hierarchy (including subitem)
-                $matchingAppropriations = $appropriations->filter(function($appr) use ($appropriation) {
-                    return $appr->expense_class_id === $appropriation->expense_class_id &&
-                           $appr->expense_type_id === $appropriation->expense_type_id &&
-                           $appr->expense_item_id === $appropriation->expense_item_id &&
-                           $appr->expense_sub_item_id === $appropriation->expense_sub_item_id;
-                });
+                if ($appropriation->expenseSubSubType) {
+                    $accountParts[] =
+                        $appropriation->expenseSubSubType->name;
+                }
 
-                // Calculate total amount and get the first appropriation ID for reference
-                $totalAmount = $matchingAppropriations->sum('amount');
-                $firstAppropriation = $matchingAppropriations->first();
+                $accountName =
+                    implode(' > ', $accountParts);
+
+                /*
+                * Get all appropriations having the EXACT
+                * same six-level hierarchy.
+                */
+                $matchingAppropriations =
+                    $appropriations->filter(function ($appr) use ($appropriation) {
+
+                        return
+                            $appr->expense_class_id ===
+                                $appropriation->expense_class_id
+
+                            &&
+
+                            $appr->expense_type_id ===
+                                $appropriation->expense_type_id
+
+                            &&
+
+                            $appr->expense_item_id ===
+                                $appropriation->expense_item_id
+
+                            &&
+
+                            $appr->expense_sub_item_id ===
+                                $appropriation->expense_sub_item_id
+
+                            &&
+
+                            $appr->expense_sub_type_id ===
+                                $appropriation->expense_sub_type_id
+
+                            &&
+
+                            $appr->expense_sub_sub_type_id ===
+                                $appropriation->expense_sub_sub_type_id;
+                    });
+
+                /*
+                * Sum all records belonging to this exact account.
+                */
+                $totalAmount =
+                    $matchingAppropriations->sum('amount');
+
+                /*
+                * Keep the first appropriation as the reference.
+                */
+                $firstAppropriation =
+                    $matchingAppropriations->first();
 
                 $groupedAppropriations[$key] = [
-                    'id' => $firstAppropriation->id, // Use first appropriation ID as reference
+
+                    /*
+                    * Primary/reference appropriation.
+                    */
+                    'id' => $firstAppropriation->id,
+
+                    /*
+                    * Complete display name.
+                    */
                     'account_name' => $accountName,
-                    'amount' => (float)$totalAmount,
-                    'expense_class_id' => $appropriation->expense_class_id,
-                    'expense_class_name' => $appropriation->expenseClass ? $appropriation->expenseClass->name : null,
-                    'expense_type_id' => $appropriation->expense_type_id,
-                    'expense_type_name' => $appropriation->expenseType ? $appropriation->expenseType->name : null,
-                    'expense_item_id' => $appropriation->expense_item_id,
-                    'expense_item_name' => $appropriation->expenseItem ? $appropriation->expenseItem->name : null,
-                    'expense_sub_item_id' => $appropriation->expense_sub_item_id,
-                    'expense_sub_item_name' => $appropriation->expenseSubItem ? $appropriation->expenseSubItem->name : null,
-                    'budget_id' => $firstAppropriation->budget_id,
-                    'budget_description' => $firstAppropriation->budget ? $firstAppropriation->budget->description : 'Unknown Budget',
-                    'status' => $appropriation->status,
-                    'created_at' => $firstAppropriation->created_at->format('Y-m-d'),
-                    'appropriation_ids' => $matchingAppropriations->pluck('id')->toArray() // Store all IDs for reference
+
+                    /*
+                    * Total amount for this exact hierarchy.
+                    */
+                    'amount' => (float) $totalAmount,
+
+                    /*
+                    * LEVEL 1
+                    */
+                    'expense_class_id' =>
+                        $appropriation->expense_class_id,
+
+                    'expense_class_name' =>
+                        $appropriation->expenseClass
+                            ? $appropriation->expenseClass->name
+                            : null,
+
+                    /*
+                    * LEVEL 2
+                    */
+                    'expense_type_id' =>
+                        $appropriation->expense_type_id,
+
+                    'expense_type_name' =>
+                        $appropriation->expenseType
+                            ? $appropriation->expenseType->name
+                            : null,
+
+                    /*
+                    * LEVEL 3
+                    */
+                    'expense_item_id' =>
+                        $appropriation->expense_item_id,
+
+                    'expense_item_name' =>
+                        $appropriation->expenseItem
+                            ? $appropriation->expenseItem->name
+                            : null,
+
+                    /*
+                    * LEVEL 4
+                    */
+                    'expense_sub_item_id' =>
+                        $appropriation->expense_sub_item_id,
+
+                    'expense_sub_item_name' =>
+                        $appropriation->expenseSubItem
+                            ? $appropriation->expenseSubItem->name
+                            : null,
+
+                    /*
+                    * LEVEL 5
+                    */
+                    'expense_sub_type_id' =>
+                        $appropriation->expense_sub_type_id,
+
+                    'expense_sub_type_name' =>
+                        $appropriation->expenseSubType
+                            ? $appropriation->expenseSubType->name
+                            : null,
+
+                    /*
+                    * LEVEL 6
+                    */
+                    'expense_sub_sub_type_id' =>
+                        $appropriation->expense_sub_sub_type_id,
+
+                    'expense_sub_sub_type_name' =>
+                        $appropriation->expenseSubSubType
+                            ? $appropriation->expenseSubSubType->name
+                            : null,
+
+                    /*
+                    * Budget information.
+                    */
+                    'budget_id' =>
+                        $firstAppropriation->budget_id,
+
+                    'budget_description' =>
+                        $firstAppropriation->budget
+                            ? $firstAppropriation->budget->description
+                            : 'Unknown Budget',
+
+                    'status' =>
+                        $appropriation->status,
+
+                    'created_at' =>
+                        $firstAppropriation->created_at
+                            ->format('Y-m-d'),
+
+                    /*
+                    * All appropriation IDs belonging to this
+                    * exact six-level account.
+                    */
+                    'appropriation_ids' =>
+                        $matchingAppropriations
+                            ->pluck('id')
+                            ->values()
+                            ->toArray(),
                 ];
             }
         }
 
-        // Convert to array and sort by appropriation ID
-        $result = array_values($groupedAppropriations);
-        usort($result, function($a, $b) {
-            return $a['id'] - $b['id'];
+        /*
+        * Convert associative array to normal array.
+        */
+        $result = array_values(
+            $groupedAppropriations
+        );
+
+        /*
+        * Sort by appropriation ID.
+        */
+        usort($result, function ($a, $b) {
+            return $a['id'] <=> $b['id'];
         });
 
         return response()->json([
@@ -3068,7 +3329,13 @@ class AppropriationController extends Controller
 
             // Transfer funds from source appropriations to supplemental budget
             foreach ($request->expense_sources as $source) {
-                $sourceAppropriation = TranAppropriation::find($source['appropriation_id']);
+                $sourceAppropriation = TranAppropriation::where(
+                    'id',
+                    $source['appropriation_id']
+                )
+                    ->where('barangay_id', $barangayId)
+                    ->where('status', 'committed')
+                    ->first();
 
                 if (!$sourceAppropriation) {
                     throw new \Exception('Source appropriation not found with ID: ' . $source['appropriation_id']);
@@ -3088,7 +3355,55 @@ class AppropriationController extends Controller
                 ]);
 
                 // Reduce the source appropriation amount
-                $sourceAppropriation->decrement('amount', $source['amount']);
+                $sourceAppropriation->decrement(
+                    'amount',
+                    $source['amount']
+                );
+
+                // Create a new appropriation under the supplemental budget
+                $supplementalAppropriation = TranAppropriation::create([
+                    'barangay_id' => $barangayId,
+                    'budget_id' => $budget->id,
+
+                    // Preserve the complete six-level hierarchy
+                    'expense_class_id' => $sourceAppropriation->expense_class_id,
+                    'expense_type_id' => $sourceAppropriation->expense_type_id,
+                    'expense_item_id' => $sourceAppropriation->expense_item_id,
+                    'expense_sub_item_id' => $sourceAppropriation->expense_sub_item_id,
+                    'expense_sub_type_id' => $sourceAppropriation->expense_sub_type_id,
+                    'expense_sub_sub_type_id' => $sourceAppropriation->expense_sub_sub_type_id,
+
+                    'amount' => $source['amount'],
+                    'transaction_date' => now(),
+                    'status' => 'committed',
+                    'user_id' => $request->user('barangay')->id
+                        ?? $request->user('admin')->id,
+                ]);
+
+                \Log::info('Created supplemental appropriation:', [
+                    'supplemental_appropriation_id' => $supplementalAppropriation->id,
+                    'supplemental_budget_id' => $budget->id,
+
+                    'expense_class_id' =>
+                        $supplementalAppropriation->expense_class_id,
+
+                    'expense_type_id' =>
+                        $supplementalAppropriation->expense_type_id,
+
+                    'expense_item_id' =>
+                        $supplementalAppropriation->expense_item_id,
+
+                    'expense_sub_item_id' =>
+                        $supplementalAppropriation->expense_sub_item_id,
+
+                    'expense_sub_type_id' =>
+                        $supplementalAppropriation->expense_sub_type_id,
+
+                    'expense_sub_sub_type_id' =>
+                        $supplementalAppropriation->expense_sub_sub_type_id,
+
+                    'amount' => $supplementalAppropriation->amount,
+                ]);
 
                 // Log after reduction
                 \Log::info('After reducing source appropriation:', [
@@ -3099,17 +3414,18 @@ class AppropriationController extends Controller
 
                 \Log::info('Funds transferred to supplemental budget:', [
                     'source_id' => $sourceAppropriation->id,
+                    'supplemental_appropriation_id' => $supplementalAppropriation->id,
                     'source_amount_before' => $sourceAppropriation->amount + $source['amount'],
                     'source_amount_after' => $sourceAppropriation->amount,
                     'transferred_amount' => $source['amount'],
-                    'note' => 'Funds transferred to supplemental budget - no tran_appropriations entry created for supplemental budget'
+                    'note' => 'Funds transferred and six-level hierarchy copied to supplemental appropriation',
                 ]);
             }
 
             \Log::info('Transfer completed - funds moved to supplemental budget:', [
                 'total_transferred' => $totalAmount,
                 'supplemental_budget_id' => $budget->id,
-                'note' => 'Funds transferred to supplemental budget - no tran_appropriations entries created for supplemental budget'
+                'note' => 'Funds transferred and supplemental appropriations created with complete hierarchy',
             ]);
 
             // Log the creation
@@ -3161,7 +3477,16 @@ class AppropriationController extends Controller
         ]);
 
         // Get base query for budgets with supplemental description
-        $query = Budget::with(['tranAppropriations.expenseType', 'fiscalYear', 'barangay'])
+        $query = Budget::with([
+            'tranAppropriations.expenseClass',
+            'tranAppropriations.expenseType',
+            'tranAppropriations.expenseItem',
+            'tranAppropriations.expenseSubItem',
+            'tranAppropriations.expenseSubType',
+            'tranAppropriations.expenseSubSubType',
+            'fiscalYear',
+            'barangay',
+        ])
             ->where('description', 'like', '%supplemental%');
 
         // Filter by barangay
@@ -3248,8 +3573,24 @@ class AppropriationController extends Controller
                 'appropriations' => $budget->tranAppropriations->map(function($appr) {
                     return [
                         'id' => $appr->id,
-                        'account_name' => $this->buildAccountName($appr->expenseClass, $appr->expenseType, $appr->expenseItem),
-                        'amount' => (float)$appr->amount
+
+                        'expense_class_id' => $appr->expense_class_id,
+                        'expense_type_id' => $appr->expense_type_id,
+                        'expense_item_id' => $appr->expense_item_id,
+                        'expense_sub_item_id' => $appr->expense_sub_item_id,
+                        'expense_sub_type_id' => $appr->expense_sub_type_id,
+                        'expense_sub_sub_type_id' => $appr->expense_sub_sub_type_id,
+
+                        'account_name' => $this->buildAccountName(
+                            $appr->expenseClass,
+                            $appr->expenseType,
+                            $appr->expenseItem,
+                            $appr->expenseSubItem,
+                            $appr->expenseSubType,
+                            $appr->expenseSubSubType
+                        ),
+
+                        'amount' => (float)$appr->amount,
                     ];
                 })
             ];
@@ -3296,12 +3637,40 @@ class AppropriationController extends Controller
     /**
      * Helper method to build account names
      */
-    private function buildAccountName($expenseClass, $expenseType, $expenseItem)
+    private function buildAccountName(
+        $expenseClass = null,
+        $expenseType = null,
+        $expenseItem = null,
+        $expenseSubItem = null,
+        $expenseSubType = null,
+        $expenseSubSubType = null)
     {
         $parts = [];
-        if ($expenseClass && $expenseClass->name) $parts[] = $expenseClass->name;
-        if ($expenseType && $expenseType->name) $parts[] = $expenseType->name;
-        if ($expenseItem && $expenseItem->name) $parts[] = $expenseItem->name;
+
+        if ($expenseClass && $expenseClass->name) {
+            $parts[] = $expenseClass->name;
+        }
+
+        if ($expenseType && $expenseType->name) {
+            $parts[] = $expenseType->name;
+        }
+
+        if ($expenseItem && $expenseItem->name) {
+            $parts[] = $expenseItem->name;
+        }
+
+        if ($expenseSubItem && $expenseSubItem->name) {
+            $parts[] = $expenseSubItem->name;
+        }
+
+        if ($expenseSubType && $expenseSubType->name) {
+            $parts[] = $expenseSubType->name;
+        }
+
+        if ($expenseSubSubType && $expenseSubSubType->name) {
+            $parts[] = $expenseSubSubType->name;
+        }
+
         return implode(' > ', $parts);
     }
 }

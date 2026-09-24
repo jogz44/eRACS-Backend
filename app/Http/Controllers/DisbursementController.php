@@ -1640,12 +1640,18 @@ class DisbursementController extends Controller
                 'dv_amount' => $disbursement->dv_amount,
             ];
 
-            // Update the disbursement
+            // ---------------------------------------------------------
+            // UPDATE DISBURSEMENT
+            // ---------------------------------------------------------
             $disbursement->update([
                 'date' => $formattedDate,
                 'dv_number' => $request->dv_number,
                 'dv_amount' => $request->dv_amount,
             ]);
+
+            // ---------------------------------------------------------
+            // UPDATE BANK / CHEQUE INFORMATION
+            // ---------------------------------------------------------
             if ($request->cancel) {
 
                 $bankAccount = $setup->bankAccounts
@@ -1668,6 +1674,7 @@ class DisbursementController extends Controller
                     'payee2'        => $request->payee2,
                 ]);
 
+                // Cancel the old cheque assigned to this disbursement
                 $cheque = LibCheque::where('disbursement_id', $id)->first();
 
                 if ($cheque) {
@@ -1676,9 +1683,11 @@ class DisbursementController extends Controller
                     ]);
                 }
 
+                // Find the booklet(s) belonging to the newly selected bank
                 $newbooklets = LibBooklet::where('bank_id', $request->bank_id)
                     ->pluck('id');
 
+                // Find the newly selected cheque
                 $newcheque = LibCheque::where('cheque_number', $request->cheque_number)
                     ->whereIn('booklet_id', $newbooklets)
                     ->first();
@@ -1690,6 +1699,7 @@ class DisbursementController extends Controller
                     ]);
                 }
 
+                // Update BankCheque record
                 BankCheque::where('disbursement_id', $id)->update([
                     'bank_id'       => $request->bank_id,
                     'cheque_number' => $request->cheque_number,
@@ -1698,29 +1708,37 @@ class DisbursementController extends Controller
                 ]);
             }
 
-            // Update bank and booklet statuses after voiding cheque
-            $bankLibraryController = new \App\Http\Controllers\Library\BankLibraryController();
-            $bankLibraryController->updateBanksStatus();
-
-            // Update expense details - handle existing and new ones
+            // ---------------------------------------------------------
+            // UPDATE EXPENSE DETAILS
+            // ---------------------------------------------------------
             if ($request->has('expenses') && is_array($request->expenses)) {
+
                 // Get existing expense detail IDs for this disbursement
-                $existingExpenseDetails = TranExpenseDetail::where('disbursement_id', $disbursement->id)
-                    ->get();
-                $existingExpenseDetailIds = $existingExpenseDetails->pluck('id')->toArray();
-                $existingExpenseDetailMap = $existingExpenseDetails->keyBy('id');
+                $existingExpenseDetails = TranExpenseDetail::where(
+                    'disbursement_id',
+                    $disbursement->id
+                )->get();
+
+                $existingExpenseDetailIds = $existingExpenseDetails
+                    ->pluck('id')
+                    ->toArray();
+
+                $existingExpenseDetailMap = $existingExpenseDetails
+                    ->keyBy('id');
+
                 $expenseAddedLogs = [];
                 $expenseEditedLogs = [];
                 $expenseDeletedLogs = [];
 
-                // Process each expense
+                // ---------------------------------------------------------
+                // PROCESS EACH EXPENSE
+                // ---------------------------------------------------------
                 foreach ($request->expenses as $expense) {
+
                     // ---------------------------------------------------------
                     // Find the EXACT appropriation selected by the user.
                     //
-                    // accountId is tran_appropriations.id.
-                    // Do NOT search by only one hierarchy level because multiple
-                    // appropriations can have the same class/type/item.
+                    // accountId = tran_appropriations.id
                     // ---------------------------------------------------------
                     $appropriation = TranAppropriation::query()
                         ->where('id', $expense['accountId'])
@@ -1736,8 +1754,7 @@ class DisbursementController extends Controller
                     }
 
                     // ---------------------------------------------------------
-                    // Verify that the hierarchy sent by the frontend matches
-                    // the actual tran_appropriations record.
+                    // VERIFY ALL SIX HIERARCHY LEVELS
                     // ---------------------------------------------------------
                     $hierarchyFields = [
                         'expense_class_id',
@@ -1749,23 +1766,27 @@ class DisbursementController extends Controller
                     ];
 
                     foreach ($hierarchyFields as $field) {
+
                         $requestedValue = $expense[$field] ?? null;
                         $actualValue = $appropriation->{$field};
 
                         // Normalize empty strings / null
                         $requestedValue = (
-                            $requestedValue === '' || $requestedValue === null
+                            $requestedValue === '' ||
+                            $requestedValue === null
                         )
                             ? null
                             : (int) $requestedValue;
 
                         $actualValue = (
-                            $actualValue === '' || $actualValue === null
+                            $actualValue === '' ||
+                            $actualValue === null
                         )
                             ? null
                             : (int) $actualValue;
 
                         if ($requestedValue !== $actualValue) {
+
                             throw new \Exception(
                                 'Expense hierarchy does not match the selected appropriation. ' .
                                 'Account ID: ' . $expense['accountId'] .
@@ -1776,136 +1797,261 @@ class DisbursementController extends Controller
                         }
                     }
 
-                    \Log::info('REGULAR DISBURSEMENT EDIT APPROPRIATION MATCH', [
-                        'expense_detail_id' => $expense['id'] ?? null,
-                        'account_id' => $expense['accountId'],
-                        'appropriation_id' => $appropriation->id,
+                    // ---------------------------------------------------------
+                    // LOG APPROPRIATION MATCH
+                    // ---------------------------------------------------------
+                    \Log::info(
+                        'REGULAR DISBURSEMENT EDIT APPROPRIATION MATCH',
+                        [
+                            'expense_detail_id' => $expense['id'] ?? null,
+                            'account_id' => $expense['accountId'],
+                            'appropriation_id' => $appropriation->id,
 
-                        'expense_class_id' => $appropriation->expense_class_id,
-                        'expense_type_id' => $appropriation->expense_type_id,
-                        'expense_item_id' => $appropriation->expense_item_id,
-                        'expense_sub_item_id' => $appropriation->expense_sub_item_id,
-                        'expense_sub_type_id' => $appropriation->expense_sub_type_id,
-                        'expense_sub_sub_type_id' => $appropriation->expense_sub_sub_type_id,
-                    ]);
+                            'expense_class_id' =>
+                                $appropriation->expense_class_id,
 
-                    if ($appropriation) {
-                        if (isset($expense['id']) && in_array($expense['id'], $existingExpenseDetailIds)) {
-                            // Update existing expense detail
-                            $existing = $existingExpenseDetailMap[$expense['id']];
-                            $previousAmount = (float) $existing->amount;
-                            $previousParticulars = $existing->particulars ?? '';
-                            $previousAppropriationId = $existing->appropriation_id;
+                            'expense_type_id' =>
+                                $appropriation->expense_type_id,
 
-                            TranExpenseDetail::where('id', $expense['id'])->update([
-                                'appropriation_id' => $appropriation->id,
-                                'amount' => $expense['amount'],
-                                'particulars' => $expense['particular'] ?? '',
-                                'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
+                            'expense_item_id' =>
+                                $appropriation->expense_item_id,
 
-                                'bank_id' => $expense['bank_id'] ?? null,
-                            ]);
+                            'expense_sub_item_id' =>
+                                $appropriation->expense_sub_item_id,
 
-                            // Log edit specifics
-                            $newAmount = (float) $expense['amount'];
-                            $newParticulars = $expense['particular'] ?? '';
-                            $changedFields = [];
+                            'expense_sub_type_id' =>
+                                $appropriation->expense_sub_type_id,
 
-                            $newName = $this->getAccountNameFromAppropriationId($appropriation->id);
-                            $accountDisplay = $previousAppropriationId !== $appropriation->id
+                            'expense_sub_sub_type_id' =>
+                                $appropriation->expense_sub_sub_type_id,
+                        ]
+                    );
+
+                    // ---------------------------------------------------------
+                    // UPDATE EXISTING EXPENSE
+                    // ---------------------------------------------------------
+                    if (
+                        isset($expense['id']) &&
+                        in_array($expense['id'], $existingExpenseDetailIds)
+                    ) {
+
+                        $existing = $existingExpenseDetailMap[$expense['id']];
+
+                        $previousAmount = (float) $existing->amount;
+                        $previousParticulars = $existing->particulars ?? '';
+                        $previousAppropriationId = $existing->appropriation_id;
+
+                        TranExpenseDetail::where(
+                            'id',
+                            $expense['id']
+                        )->update([
+                            'appropriation_id' => $appropriation->id,
+                            'amount' => $expense['amount'],
+                            'particulars' => $expense['particular'] ?? '',
+                            'cheque_number' => $expense['cheque_number'] ?? null,
+                            'bank_id' => $expense['bank_id'] ?? null,
+                        ]);
+
+                        // -----------------------------------------------------
+                        // LOG EDIT
+                        // -----------------------------------------------------
+                        $newAmount = (float) $expense['amount'];
+                        $newParticulars = $expense['particular'] ?? '';
+                        $changedFields = [];
+
+                        $newName = $this->getAccountNameFromAppropriationId(
+                            $appropriation->id
+                        );
+
+                        $accountDisplay =
+                            $previousAppropriationId !== $appropriation->id
                                 ? sprintf('%s', $newName)
                                 : $newName;
-                            // Detect amount change
-                            if ($previousAmount !== $newAmount) {
-                                $changedFields[] = sprintf('Amount ₱%s → ₱%s', number_format($previousAmount, 2), number_format($newAmount, 2));
-                            }
-                            // Detect particulars change
-                            if ($previousParticulars !== $newParticulars) {
-                                $changedFields[] = sprintf('Particulars "%s" → "%s"', $previousParticulars, $newParticulars);
-                            }
 
-                            if (!empty($changedFields)) {
-                                $expenseEditedLogs[] = sprintf('%s%s', $accountDisplay, empty($changedFields) ? '' : ' | ' . implode(', ', $changedFields));
-                            }
-                        } else {
-                            // Create new expense detail
-                            $created = TranExpenseDetail::create([
-                                'disbursement_id' => $disbursement->id,
-                                'appropriation_id' => $appropriation->id,
-                                'amount' => $expense['amount'],
-                                'particulars' => $expense['particular'] ?? '',
-                                'cheque_number' => $expense['cheque_number'] ?? null,   // ADD
-
-                                'bank_id' => $expense['bank_id'] ?? null,
-                            ]);
-
-                            // Log added expense account
-                            $accountName = $this->getAccountNameFromAppropriationId($appropriation->id);
-                            $expenseAddedLogs[] = sprintf(
-                                '%s amount ₱%s%s',
-                                $accountName,
-                                number_format((float)$expense['amount'], 2),
-                                isset($expense['particular']) && $expense['particular'] !== '' ? ' | Particulars: "' . $expense['particular'] . '"' : ''
+                        if ($previousAmount !== $newAmount) {
+                            $changedFields[] = sprintf(
+                                'Amount ₱%s → ₱%s',
+                                number_format($previousAmount, 2),
+                                number_format($newAmount, 2)
                             );
                         }
+
+                        if ($previousParticulars !== $newParticulars) {
+                            $changedFields[] = sprintf(
+                                'Particulars "%s" → "%s"',
+                                $previousParticulars,
+                                $newParticulars
+                            );
+                        }
+
+                        if (!empty($changedFields)) {
+                            $expenseEditedLogs[] = sprintf(
+                                '%s%s',
+                                $accountDisplay,
+                                empty($changedFields)
+                                    ? ''
+                                    : ' | ' . implode(', ', $changedFields)
+                            );
+                        }
+
+                    } else {
+
+                        // -----------------------------------------------------
+                        // CREATE NEW EXPENSE
+                        // -----------------------------------------------------
+                        TranExpenseDetail::create([
+                            'disbursement_id' => $disbursement->id,
+                            'appropriation_id' => $appropriation->id,
+                            'amount' => $expense['amount'],
+                            'particulars' => $expense['particular'] ?? '',
+                            'cheque_number' => $expense['cheque_number'] ?? null,
+                            'bank_id' => $expense['bank_id'] ?? null,
+                        ]);
+
+                        // Log added expense account
+                        $accountName = $this->getAccountNameFromAppropriationId(
+                            $appropriation->id
+                        );
+
+                        $expenseAddedLogs[] = sprintf(
+                            '%s amount ₱%s%s',
+                            $accountName,
+                            number_format(
+                                (float) $expense['amount'],
+                                2
+                            ),
+                            isset($expense['particular']) &&
+                            $expense['particular'] !== ''
+                                ? ' | Particulars: "' .
+                                    $expense['particular'] .
+                                    '"'
+                                : ''
+                        );
                     }
                 }
 
-                // Delete any remaining expense details that are no longer in the request
+                // ---------------------------------------------------------
+                // DELETE EXPENSES REMOVED FROM THE REQUEST
+                // ---------------------------------------------------------
                 $requestedIds = collect($request->expenses)
                     ->pluck('id')
                     ->filter()
                     ->toArray();
 
-                $toDeleteIds = array_diff($existingExpenseDetailIds, $requestedIds);
+                $toDeleteIds = array_diff(
+                    $existingExpenseDetailIds,
+                    $requestedIds
+                );
+
                 foreach ($toDeleteIds as $delId) {
+
                     $detail = $existingExpenseDetailMap[$delId] ?? null;
+
                     if ($detail) {
-                        $accountName = $this->getAccountNameFromAppropriationId($detail->appropriation_id);
+
+                        $accountName =
+                            $this->getAccountNameFromAppropriationId(
+                                $detail->appropriation_id
+                            );
+
                         $expenseDeletedLogs[] = sprintf(
                             '%s amount ₱%s%s',
                             $accountName,
-                            number_format((float)$detail->amount, 2),
-                            $detail->particulars ? ' | Particulars: "' . $detail->particulars . '"' : ''
+                            number_format(
+                                (float) $detail->amount,
+                                2
+                            ),
+                            $detail->particulars
+                                ? ' | Particulars: "' .
+                                    $detail->particulars .
+                                    '"'
+                                : ''
                         );
                     }
-                    TranExpenseDetail::where('id', $delId)->delete();
+
+                    TranExpenseDetail::where(
+                        'id',
+                        $delId
+                    )->delete();
                 }
 
-                // Build unified log message for expense changes and top-level updates
+                // ---------------------------------------------------------
+                // BUILD UNIFIED LOG MESSAGE
+                // ---------------------------------------------------------
                 $topLevelChanges = [];
                 $amountChange = null;
+
                 if ($prev['dv_number'] !== $disbursement->dv_number) {
-                    $topLevelChanges[] = sprintf('DV# %s → %s', $prev['dv_number'], $disbursement->dv_number);
+                    $topLevelChanges[] = sprintf(
+                        'DV# %s → %s',
+                        $prev['dv_number'],
+                        $disbursement->dv_number
+                    );
                 }
+
                 if ($prev['payee'] !== $disbursement->payee) {
-                    $topLevelChanges[] = sprintf('Payee %s → %s', $prev['payee'], $disbursement->payee);
+                    $topLevelChanges[] = sprintf(
+                        'Payee %s → %s',
+                        $prev['payee'],
+                        $disbursement->payee
+                    );
                 }
+
                 if ($prev['date'] !== $disbursement->date) {
-                    $topLevelChanges[] = sprintf('Date %s → %s', $prev['date'], $disbursement->date);
+                    $topLevelChanges[] = sprintf(
+                        'Date %s → %s',
+                        $prev['date'],
+                        $disbursement->date
+                    );
                 }
-                if ((float)$prev['dv_amount'] !== (float)$disbursement->dv_amount) {
-                    $amountChange = sprintf('Overall Amount ₱%s → ₱%s', number_format((float)$prev['dv_amount'], 2), number_format((float)$disbursement->dv_amount, 2));
+
+                if (
+                    (float) $prev['dv_amount'] !==
+                    (float) $disbursement->dv_amount
+                ) {
+                    $amountChange = sprintf(
+                        'Overall Amount ₱%s → ₱%s',
+                        number_format(
+                            (float) $prev['dv_amount'],
+                            2
+                        ),
+                        number_format(
+                            (float) $disbursement->dv_amount,
+                            2
+                        )
+                    );
                 }
 
                 $parts = [];
+
                 if (!empty($topLevelChanges)) {
-                    $parts[] = implode(', ', $topLevelChanges);
+                    $parts[] = implode(
+                        ', ',
+                        $topLevelChanges
+                    );
                 }
+
                 if (!empty($expenseAddedLogs)) {
-                    $parts[] = 'Added: ' . implode('; ', $expenseAddedLogs);
+                    $parts[] = 'Added: ' .
+                        implode('; ', $expenseAddedLogs);
                 }
+
                 if (!empty($expenseEditedLogs)) {
-                    $parts[] = 'Edited: ' . implode('; ', $expenseEditedLogs);
+                    $parts[] = 'Edited: ' .
+                        implode('; ', $expenseEditedLogs);
                 }
+
                 if (!empty($expenseDeletedLogs)) {
-                    $parts[] = 'Deleted: ' . implode('; ', $expenseDeletedLogs);
+                    $parts[] = 'Deleted: ' .
+                        implode('; ', $expenseDeletedLogs);
                 }
+
                 if (!empty($amountChange)) {
                     $parts[] = $amountChange;
                 }
 
                 if (!empty($parts)) {
+
                     AdminAuthController::logUserAction(
                         $user,
                         'Edited Disbursement',
@@ -1918,14 +2064,36 @@ class DisbursementController extends Controller
                 }
             }
 
+            // ---------------------------------------------------------
+            // IMPORTANT:
+            // Recalculate bank and booklet statuses LAST.
+            //
+            // This must happen AFTER the cheque/BankCheque and expense
+            // updates have completed.
+            // ---------------------------------------------------------
+            $bankLibraryController =
+                new \App\Http\Controllers\Library\BankLibraryController();
 
+            $bankLibraryController->updateBanksStatus(
+                $user->barangay_id
+            );
+
+            // ---------------------------------------------------------
+            // SUCCESS RESPONSE
+            // ---------------------------------------------------------
             return response()->json([
                 'status' => true,
                 'message' => 'Disbursement updated successfully',
                 'data' => $disbursement
             ]);
+
         } catch (\Exception $e) {
-            \Log::error('Error updating disbursement: ' . $e->getMessage());
+
+            \Log::error(
+                'Error updating disbursement: ' .
+                $e->getMessage()
+            );
+
             return response()->json([
                 'status' => false,
                 'message' => 'Failed to update disbursement',
@@ -2208,7 +2376,7 @@ class DisbursementController extends Controller
 
                 // Update bank and booklet statuses after voiding cheque
                 $bankLibraryController = new \App\Http\Controllers\Library\BankLibraryController();
-                $bankLibraryController->updateBanksStatus();
+                $bankLibraryController->updateBanksStatus($request->user()->barangay_id);
             }
 
 
@@ -2371,7 +2539,7 @@ class DisbursementController extends Controller
 
                 // Update bank and booklet statuses after voiding cheque
                 $bankLibraryController = new \App\Http\Controllers\Library\BankLibraryController();
-                $bankLibraryController->updateBanksStatus();
+                $bankLibraryController->updateBanksStatus($request->user()->barangay_id);
             }
 
             // Log action
@@ -2570,11 +2738,18 @@ class DisbursementController extends Controller
                 'appropriation.expenseType',
                 'appropriation.expenseItem',
                 'appropriation.expenseSubItem',
-                'disbursement.bankCheques.bank'
+                'appropriation.expenseSubType',
+                'appropriation.expenseSubSubType',
+                'disbursement.bankCheques.bank',
+                'disbursement.barangay.setup.bankAccounts',
             ]);
 
-            // Determine target barangay: allow explicit barangay_id (for admin), else fallback to user's barangay
+            // ---------------------------------------------------------
+            // Determine target barangay
+            // ---------------------------------------------------------
+
             $targetBarangayId = $request->input('barangay_id');
+
             if (!$targetBarangayId && $user && isset($user->barangay_id)) {
                 $targetBarangayId = $user->barangay_id;
             }
@@ -2585,18 +2760,40 @@ class DisbursementController extends Controller
                 });
             }
 
-            // Optional filters for admin RAC preview
+            // ---------------------------------------------------------
+            // Optional filters
+            // ---------------------------------------------------------
+
             $from = $request->input('from');
             $to = $request->input('to');
             $expenseClassId = $request->input('expense_class_id');
 
             if ($from && $to) {
-                // normalize date format
-                $fromDate = str_replace('/', '-', $from);
-                $toDate = str_replace('/', '-', $to);
-                $query->whereHas('disbursement', function ($q) use ($fromDate, $toDate) {
-                    $q->whereBetween('date', [$fromDate, $toDate]);
-                });
+
+                // Convert DD/MM/YYYY -> YYYY-MM-DD
+                $fromParts = explode('/', $from);
+                $toParts = explode('/', $to);
+
+                if (count($fromParts) === 3 && count($toParts) === 3) {
+
+                    $fromDate = $fromParts[2] . '-' .
+                        $fromParts[1] . '-' .
+                        $fromParts[0];
+
+                    $toDate = $toParts[2] . '-' .
+                        $toParts[1] . '-' .
+                        $toParts[0];
+
+                    $query->whereHas('disbursement', function ($q) use (
+                        $fromDate,
+                        $toDate
+                    ) {
+                        $q->whereBetween('date', [
+                            $fromDate,
+                            $toDate
+                        ]);
+                    });
+                }
             }
 
             if ($expenseClassId) {
@@ -2607,70 +2804,256 @@ class DisbursementController extends Controller
 
             $expenseDetails = $query->get();
 
-            $result = $expenseDetails->map(function ($detail) {
-                $expenseClassName = optional($detail->appropriation->expenseClass)->name;
-                $expenseTypeName = optional($detail->appropriation->expenseType)->name;
-                $expenseItemName = optional($detail->appropriation->expenseItem)->name;
+            // ---------------------------------------------------------
+            // Build result
+            // ---------------------------------------------------------
 
-                // Compose an account title similar to barangay RAC (prefer item/type/class)
-                $accountTitle = $expenseItemName ?: ($expenseTypeName ?: $expenseClassName);
+            $result = $expenseDetails->map(function ($detail) {
+
+                $appropriation = $detail->appropriation;
+
+                if (!$appropriation) {
+                    return null;
+                }
+
+                // -----------------------------------------------------
+                // Names
+                // -----------------------------------------------------
+
+                $expenseClassName =
+                    optional($appropriation->expenseClass)->name;
+
+                $expenseTypeName =
+                    optional($appropriation->expenseType)->name;
+
+                $expenseItemName =
+                    optional($appropriation->expenseItem)->name;
+
+                $expenseSubItemName =
+                    optional($appropriation->expenseSubItem)->name;
+
+                $expenseSubTypeName =
+                    optional($appropriation->expenseSubType)->name;
+
+                $expenseSubSubTypeName =
+                    optional($appropriation->expenseSubSubType)->name;
+
+                // -----------------------------------------------------
+                // Full six-level account title
+                // -----------------------------------------------------
+
+                $accountParts = array_filter([
+                    $expenseClassName,
+                    $expenseTypeName,
+                    $expenseItemName,
+                    $expenseSubItemName,
+                    $expenseSubTypeName,
+                    $expenseSubSubTypeName,
+                ], function ($value) {
+                    return $value !== null && $value !== '';
+                });
+
+                $accountTitle = !empty($accountParts)
+                    ? implode(' > ', $accountParts)
+                    : 'Unknown Account';
+
+                // -----------------------------------------------------
+                // Calculate EXACT appropriation balance
+                // -----------------------------------------------------
+                //
+                // IMPORTANT:
+                // Do not combine this with other appropriations.
+                // Each six-level appropriation has its own balance.
+                //
+
+                $appropriationAmount = (float) ($appropriation->amount ?? 0);
+
+                $usedAmount = (float) TranExpenseDetail::where(
+                    'appropriation_id',
+                    $appropriation->id
+                )->sum('amount');
+
+                $balance = max(
+                    0,
+                    $appropriationAmount - $usedAmount
+                );
+
+                // -----------------------------------------------------
+                // Bank cheques
+                // -----------------------------------------------------
+
+                $bankCheques = optional($detail->disbursement)
+                    ->bankCheques
+                    ->map(function ($cheque) use ($detail) {
+
+                        $bankAccount = optional(
+                            optional($detail->disbursement->barangay->setup)
+                                ->bankAccounts
+                        )->where(
+                            'bank_id',
+                            $cheque->bank_id
+                        )->first();
+
+                        return [
+                            'id' => $cheque->id,
+                            'bank_id' => $cheque->bank_id,
+                            'bank_name' => optional(
+                                $cheque->bank
+                            )->bank_name,
+
+                            'cheque_number' =>
+                                $cheque->cheque_number,
+
+                            'cheque_date' =>
+                                $cheque->cheque_date,
+
+                            'bank_status' =>
+                                optional($bankAccount)->bank_status,
+
+                            'amount' =>
+                                (float) ($cheque->amount ?? 0),
+                        ];
+                    })
+                    ->values();
+
+                // -----------------------------------------------------
+                // Return result
+                // -----------------------------------------------------
 
                 return [
                     'id' => $detail->id,
-                    'disbursement_id' => $detail->disbursement_id,
-                    'appropriation_id' => $detail->appropriation_id,
-                    'amount' => (float) ($detail->amount ?? optional($detail->disbursement)->dv_amount ?? 0),
-                    'particular' => $detail->particulars,
-                    'particulars' => $detail->particulars,
-                    'appropriation' => (float) optional($detail->appropriation)->amount,
-                    'expense_class_id' => $detail->appropriation->expense_class_id ?? null,
-                    'expense_type_id' => $detail->appropriation->expense_type_id ?? null,
-                    'expense_item_id' => $detail->appropriation->expense_item_id ?? null,
-                    'expense_sub_item_id' => $detail->appropriation->expense_sub_item_id ?? null,
-                    'expense_class_name' => $expenseClassName,
-                    'expense_class_order' => optional($detail->appropriation->expenseClass)->order,
-                    'expense_type_name' => $expenseTypeName,
-                    'expense_item_name' => $expenseItemName,
-                    'expense_sub_item_name' => optional($detail->appropriation->expenseSubItem)->name,
-                    'date' => optional($detail->disbursement)->date,
-                    'dvNumber' => optional($detail->disbursement)->dv_number,
-                    'dv_number' => optional($detail->disbursement)->dv_number,
-                    'payee' => optional($detail->disbursement)->payee,
-                    'payee2' => optional($detail->disbursement)->payee2,
-                    'bank_cheques' => optional($detail->disbursement)
-                        ->bankCheques
-                        ->map(function ($cheque) use ($detail) {
 
-                            $bankAccount = optional(
-                                optional($detail->disbursement->barangay->setup)
-                                    ->bankAccounts
-                            )->where('bank_id', $cheque->bank_id)->first();
+                    'disbursement_id' =>
+                        $detail->disbursement_id,
 
-                            return [
-                                'id' => $cheque->id,
-                                'bank_id' => $cheque->bank_id,
-                                'bank_name' => optional($cheque->bank)->bank_name,
-                                'cheque_number' => $cheque->cheque_number,
-                                'cheque_date' => $cheque->cheque_date,
+                    // EXACT tran_appropriations.id
+                    'appropriation_id' =>
+                        $detail->appropriation_id,
 
-                                // NOW COMES FROM BARANGAY SETUP
-                                'bank_status' => optional($bankAccount)->bank_status,
+                    'amount' =>
+                        (float) ($detail->amount ?? 0),
 
-                                'amount' => $cheque->amount,
-                            ];
-                        })->values(),
-                    'accountTitle' => $accountTitle,
-                    'created_at' => $detail->created_at,
-                    'updated_at' => $detail->updated_at,
+                    'particular' =>
+                        $detail->particulars,
+
+                    'particulars' =>
+                        $detail->particulars,
+
+                    // Original appropriation amount
+                    'appropriation' =>
+                        $appropriationAmount,
+
+                    // Actual current balance
+                    'balance' =>
+                        $balance,
+
+                    // Amount already consumed
+                    'used_amount' =>
+                        $usedAmount,
+
+                    // -------------------------------------------------
+                    // Six-level hierarchy IDs
+                    // -------------------------------------------------
+
+                    'expense_class_id' =>
+                        $appropriation->expense_class_id,
+
+                    'expense_type_id' =>
+                        $appropriation->expense_type_id,
+
+                    'expense_item_id' =>
+                        $appropriation->expense_item_id,
+
+                    'expense_sub_item_id' =>
+                        $appropriation->expense_sub_item_id,
+
+                    'expense_sub_type_id' =>
+                        $appropriation->expense_sub_type_id,
+
+                    'expense_sub_sub_type_id' =>
+                        $appropriation->expense_sub_sub_type_id,
+
+                    // -------------------------------------------------
+                    // Six-level hierarchy names
+                    // -------------------------------------------------
+
+                    'expense_class_name' =>
+                        $expenseClassName,
+
+                    'expense_class_order' =>
+                        optional($appropriation->expenseClass)->order,
+
+                    'expense_type_name' =>
+                        $expenseTypeName,
+
+                    'expense_item_name' =>
+                        $expenseItemName,
+
+                    'expense_sub_item_name' =>
+                        $expenseSubItemName,
+
+                    'expense_sub_type_name' =>
+                        $expenseSubTypeName,
+
+                    'expense_sub_sub_type_name' =>
+                        $expenseSubSubTypeName,
+
+                    // Full account path
+                    'accountTitle' =>
+                        $accountTitle,
+
+                    // -------------------------------------------------
+                    // Disbursement information
+                    // -------------------------------------------------
+
+                    'date' =>
+                        optional($detail->disbursement)->date,
+
+                    'dvNumber' =>
+                        optional($detail->disbursement)->dv_number,
+
+                    'dv_number' =>
+                        optional($detail->disbursement)->dv_number,
+
+                    'payee' =>
+                        optional($detail->disbursement)->payee,
+
+                    'payee2' =>
+                        optional($detail->disbursement)->payee2,
+
+                    // -------------------------------------------------
+                    // Bank cheques
+                    // -------------------------------------------------
+
+                    'bank_cheques' =>
+                        $bankCheques,
+
+                    'created_at' =>
+                        $detail->created_at,
+
+                    'updated_at' =>
+                        $detail->updated_at,
                 ];
-            });
+            })
+            ->filter()
+            ->values();
 
             return response()->json([
                 'status' => true,
                 'data' => $result
             ]);
+
         } catch (\Exception $e) {
-            \Log::error('Error fetching expense details: ' . $e->getMessage());
+
+            \Log::error(
+                'Error fetching expense details: ' .
+                $e->getMessage()
+            );
+
+            \Log::error(
+                $e->getTraceAsString()
+            );
+
             return response()->json([
                 'status' => false,
                 'message' => 'Failed to fetch expense details',
@@ -2685,168 +3068,206 @@ class DisbursementController extends Controller
         $request->validate([
             'amount' => 'required|numeric|min:0',
             'particulars' => 'nullable|string',
-            'disbursement_id' => 'exists:disbursements,id', // Allow disbursement_id to be provided
-            // Client may provide either a direct appropriation_id or one of the expense hierarchy IDs
-            'appropriation_id' => 'nullable|exists:tran_appropriations,id',
-            'expense_class_id' => 'nullable|exists:lib_expense_classes,id',
-            'expense_type_id' => 'nullable|exists:lib_expense_types,id',
-            'expense_item_id' => 'nullable|exists:lib_expense_items,id',
+            'disbursement_id' => 'nullable|exists:disbursements,id',
+
+            // Exact appropriation ID is preferred
+            'appropriation_id' => 'nullable|integer|exists:tran_appropriations,id',
+
+            // Full six-level hierarchy
+            'expense_class_id' => 'nullable|integer|exists:lib_expense_classes,id',
+            'expense_type_id' => 'nullable|integer|exists:lib_expense_types,id',
+            'expense_item_id' => 'nullable|integer|exists:lib_expense_items,id',
+            'expense_sub_item_id' => 'nullable|integer|exists:lib_expense_sub_items,id',
+            'expense_sub_type_id' => 'nullable|integer|exists:lib_expense_sub_types,id',
+            'expense_sub_sub_type_id' => 'nullable|integer|exists:lib_expense_sub_sub_types,id',
         ]);
 
         try {
             $user = $request->user();
 
-            \Log::info('Starting expense detail creation:', [
-                'user_id' => $user->id,
-                'barangay_id' => $user->barangay_id,
-                'request_data' => $request->all()
-            ]);
-
-            // Use database transaction to ensure data consistency
             DB::beginTransaction();
 
-            // Resolve appropriation
-            $appropriationQuery = TranAppropriation::where('barangay_id', $user->barangay_id)
-                ->where('status', 'committed');
+            /*
+            |--------------------------------------------------------------------------
+            | Find the EXACT appropriation
+            |--------------------------------------------------------------------------
+            |
+            | Do not combine appropriations into one pool.
+            | Each six-level account has its own balance.
+            |
+            */
 
             $appropriation = null;
+
             if ($request->filled('appropriation_id')) {
-                $appropriation = $appropriationQuery->where('id', $request->appropriation_id)->first();
+
+                $appropriation = TranAppropriation::where('id', $request->appropriation_id)
+                    ->where('barangay_id', $user->barangay_id)
+                    ->where('status', 'committed')
+                    ->first();
+            } else {
+
+                $appropriationQuery = TranAppropriation::where(
+                    'barangay_id',
+                    $user->barangay_id
+                )
+                    ->where('status', 'committed');
+
+                /*
+                |--------------------------------------------------------------------------
+                | Match the complete hierarchy
+                |--------------------------------------------------------------------------
+                */
+
+                $hierarchyFields = [
+                    'expense_class_id',
+                    'expense_type_id',
+                    'expense_item_id',
+                    'expense_sub_item_id',
+                    'expense_sub_type_id',
+                    'expense_sub_sub_type_id',
+                ];
+
+                foreach ($hierarchyFields as $field) {
+
+                    $value = $request->input($field);
+
+                    if ($value !== null && $value !== '') {
+                        $appropriationQuery->where($field, (int) $value);
+                    } else {
+                        $appropriationQuery->whereNull($field);
+                    }
+                }
+
+                $appropriation = $appropriationQuery
+                    ->orderByDesc('created_at')
+                    ->first();
             }
 
             if (!$appropriation) {
-                // Prefer most specific ID first (item > type > class)
-                if ($request->filled('expense_item_id')) {
-                    $appropriationQuery->where('expense_item_id', $request->expense_item_id);
-                } elseif ($request->filled('expense_type_id')) {
-                    $appropriationQuery->whereNull('expense_item_id')
-                        ->where('expense_type_id', $request->expense_type_id);
-                } elseif ($request->filled('expense_class_id')) {
-                    $appropriationQuery->whereNull('expense_item_id')
-                        ->whereNull('expense_type_id')
-                        ->where('expense_class_id', $request->expense_class_id);
-                } else {
-                    DB::rollBack();
-                    return response()->json([
-                        'status' => false,
-                        'message' => 'No appropriation reference provided',
-                        'errors' => ['appropriation' => ['Provide appropriation_id or one of expense_item_id/expense_type_id/expense_class_id']]
-                    ], 422);
-                }
-
-                // Pick the most recent committed appropriation that matches
-                $appropriation = $appropriationQuery->orderByDesc('created_at')->first();
-                if (!$appropriation) {
-                    DB::rollBack();
-                    return response()->json([
-                        'status' => false,
-                        'message' => 'No committed appropriation found for the selected account',
-                    ], 422);
-                }
-            }
-
-            \Log::info('Found appropriation:', [
-                'id' => $appropriation->id,
-                'amount' => $appropriation->amount,
-                'expense_class_id' => $appropriation->expense_class_id,
-                'expense_type_id' => $appropriation->expense_type_id,
-                'expense_item_id' => $appropriation->expense_item_id,
-            ]);
-
-            // Find all matching appropriations and treat them as one budget pool
-            $matchingAppropriationsQuery = TranAppropriation::where('barangay_id', $user->barangay_id)
-                ->where('status', 'committed');
-
-            if ($appropriation->expense_item_id) {
-                $matchingAppropriationsQuery->where('expense_item_id', $appropriation->expense_item_id);
-            } elseif ($appropriation->expense_type_id) {
-                $matchingAppropriationsQuery->whereNull('expense_item_id')
-                    ->where('expense_type_id', $appropriation->expense_type_id);
-            } else {
-                $matchingAppropriationsQuery->whereNull('expense_item_id')
-                    ->where('expense_class_id', $appropriation->expense_class_id);
-            }
-
-            $matchingAppropriations = $matchingAppropriationsQuery->orderBy('created_at', 'asc')->get();
-
-            \Log::info('Matching appropriations found:', [
-                'count' => $matchingAppropriations->count(),
-                'requested_amount' => $request->amount,
-                'expense_class_id' => $request->expense_class_id,
-                'expense_type_id' => $request->expense_type_id,
-                'expense_item_id' => $request->expense_item_id,
-            ]);
-
-            if ($matchingAppropriations->isEmpty()) {
                 DB::rollBack();
+
                 return response()->json([
                     'status' => false,
-                    'message' => 'No appropriations found for the selected account',
+                    'message' => 'Exact appropriation account was not found.',
                 ], 422);
             }
 
-            // Calculate total available balance across all appropriations (treat as one pool)
-            $totalAvailableBalance = 0;
-            foreach ($matchingAppropriations as $appr) {
-                $alreadyUsed = TranExpenseDetail::where('appropriation_id', $appr->id)->sum('amount');
-                $available = max(0, (float)$appr->amount - (float)$alreadyUsed);
-                $totalAvailableBalance += $available;
-            }
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate balance of THIS exact appropriation
+            |--------------------------------------------------------------------------
+            */
 
-            \Log::info('Total available balance:', [
-                'total_available' => $totalAvailableBalance,
-                'requested_amount' => $request->amount,
-            ]);
+            $alreadyUsed = TranExpenseDetail::where(
+                'appropriation_id',
+                $appropriation->id
+            )->sum('amount');
 
-            if ($totalAvailableBalance < (float)$request->amount) {
+            $appropriationAmount = (float) $appropriation->amount;
+            $alreadyUsedAmount = (float) $alreadyUsed;
+
+            $availableBalance = max(
+                0,
+                $appropriationAmount - $alreadyUsedAmount
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Check balance
+            |--------------------------------------------------------------------------
+            */
+
+            if ($availableBalance < (float) $request->amount) {
+
                 DB::rollBack();
+
                 return response()->json([
                     'status' => false,
-                    'message' => 'Insufficient appropriation balance to cover requested amount',
+                    'message' => 'Insufficient appropriation balance.',
+                    'data' => [
+                        'appropriation_id' => $appropriation->id,
+                        'appropriation_amount' => $appropriationAmount,
+                        'used_amount' => $alreadyUsedAmount,
+                        'available_balance' => $availableBalance,
+                        'requested_amount' => (float) $request->amount,
+                    ],
                 ], 422);
             }
 
-            // Create the expense detail record
+            /*
+            |--------------------------------------------------------------------------
+            | Create expense detail against EXACT appropriation
+            |--------------------------------------------------------------------------
+            */
+
             $expenseDetail = TranExpenseDetail::create([
-                'disbursement_id' => $request->disbursement_id, // Use provided disbursement_id or null
-                'appropriation_id' => $matchingAppropriations->first()->id, // Use first appropriation as reference
-                'amount' => (float)$request->amount,
+                'disbursement_id' => $request->disbursement_id,
+                'appropriation_id' => $appropriation->id,
+                'amount' => (float) $request->amount,
                 'particulars' => $request->particulars ?? '',
             ]);
 
-            \Log::info('Successfully created expense detail:', [
-                'id' => $expenseDetail->id,
-                'amount' => $expenseDetail->amount,
-                'appropriation_id' => $expenseDetail->appropriation_id,
-                'disbursement_id' => $expenseDetail->disbursement_id,
-            ]);
-
-            // Commit the transaction
             DB::commit();
 
-            // Return the expense detail
+            /*
+            |--------------------------------------------------------------------------
+            | Return updated balance
+            |--------------------------------------------------------------------------
+            */
+
+            $newUsedAmount = TranExpenseDetail::where(
+                'appropriation_id',
+                $appropriation->id
+            )->sum('amount');
+
+            $newBalance = max(
+                0,
+                $appropriationAmount - (float) $newUsedAmount
+            );
+
             return response()->json([
                 'status' => true,
                 'message' => 'Expense detail created successfully',
+
                 'data' => [
                     'id' => $expenseDetail->id,
                     'disbursement_id' => $expenseDetail->disbursement_id,
-                    'appropriation_id' => $expenseDetail->appropriation_id,
-                    'amount' => $expenseDetail->amount,
+
+                    'appropriation_id' => $appropriation->id,
+
+                    'amount' => (float) $expenseDetail->amount,
                     'particulars' => $expenseDetail->particulars,
+
                     'expense_class_id' => $appropriation->expense_class_id,
                     'expense_type_id' => $appropriation->expense_type_id,
                     'expense_item_id' => $appropriation->expense_item_id,
-                ]
+                    'expense_sub_item_id' => $appropriation->expense_sub_item_id,
+                    'expense_sub_type_id' => $appropriation->expense_sub_type_id,
+                    'expense_sub_sub_type_id' => $appropriation->expense_sub_sub_type_id,
+
+                    'appropriation_amount' => $appropriationAmount,
+                    'used_amount' => (float) $newUsedAmount,
+                    'balance' => $newBalance,
+                ],
             ], 201);
+
         } catch (\Exception $e) {
+
             DB::rollBack();
-            \Log::error('Error creating expense detail: ' . $e->getMessage());
-            \Log::error('Stack trace: ' . $e->getTraceAsString());
+
+            \Log::error(
+                'Error creating expense detail: ' . $e->getMessage()
+            );
+
+            \Log::error(
+                'Stack trace: ' . $e->getTraceAsString()
+            );
+
             return response()->json([
                 'status' => false,
                 'message' => 'Failed to create expense detail',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -2856,29 +3277,330 @@ class DisbursementController extends Controller
     {
         $request->validate([
             'disbursement_id' => 'nullable|exists:disbursements,id',
+
+            'amount' => 'sometimes|required|numeric|min:0',
+            'particulars' => 'sometimes|nullable|string',
+
+            // Exact appropriation ID
+            'appropriation_id' => 'sometimes|nullable|integer|exists:tran_appropriations,id',
+
+            // Full six-level hierarchy
+            'expense_class_id' => 'sometimes|nullable|integer|exists:lib_expense_classes,id',
+            'expense_type_id' => 'sometimes|nullable|integer|exists:lib_expense_types,id',
+            'expense_item_id' => 'sometimes|nullable|integer|exists:lib_expense_items,id',
+            'expense_sub_item_id' => 'sometimes|nullable|integer|exists:lib_expense_sub_items,id',
+            'expense_sub_type_id' => 'sometimes|nullable|integer|exists:lib_expense_sub_types,id',
+            'expense_sub_sub_type_id' => 'sometimes|nullable|integer|exists:lib_expense_sub_sub_types,id',
         ]);
 
         try {
             $user = $request->user();
 
-            // Find the expense detail and ensure it belongs to the user's barangay
+            DB::beginTransaction();
+
+            /*
+            |--------------------------------------------------------------------------
+            | 1. Find existing expense detail
+            |--------------------------------------------------------------------------
+            */
             $expenseDetail = TranExpenseDetail::where('id', $id)
                 ->whereHas('appropriation', function ($q) use ($user) {
                     $q->where('barangay_id', $user->barangay_id);
                 })
                 ->firstOrFail();
 
-            $expenseDetail->update([
-                'disbursement_id' => $request->disbursement_id,
+            $oldAppropriationId = $expenseDetail->appropriation_id;
+            $oldAmount = (float) $expenseDetail->amount;
+
+            /*
+            |--------------------------------------------------------------------------
+            | 2. Validate disbursement if supplied
+            |--------------------------------------------------------------------------
+            */
+            if ($request->has('disbursement_id') && $request->disbursement_id !== null) {
+
+                $disbursementExists = Disbursement::where('id', $request->disbursement_id)
+                    ->where('barangay_id', $user->barangay_id)
+                    ->exists();
+
+                if (!$disbursementExists) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'The selected disbursement does not belong to your barangay.'
+                    ], 422);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 3. Determine the appropriation
+            |--------------------------------------------------------------------------
+            |
+            | If appropriation_id is supplied, use the EXACT appropriation.
+            |
+            | Otherwise keep the existing appropriation.
+            |
+            */
+            $appropriation = TranAppropriation::query()
+                ->where('id', $expenseDetail->appropriation_id)
+                ->where('barangay_id', $user->barangay_id)
+                ->first();
+
+            /*
+            |--------------------------------------------------------------------------
+            | 4. If a new appropriation/account was supplied, resolve it
+            |--------------------------------------------------------------------------
+            */
+            if ($request->has('appropriation_id')) {
+
+                if ($request->appropriation_id === null) {
+
+                    DB::rollBack();
+
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'appropriation_id cannot be null when changing the expense account.'
+                    ], 422);
+                }
+
+                $appropriation = TranAppropriation::query()
+                    ->where('id', $request->appropriation_id)
+                    ->where('barangay_id', $user->barangay_id)
+                    ->where('status', 'committed')
+                    ->first();
+
+                if (!$appropriation) {
+
+                    DB::rollBack();
+
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'The selected appropriation was not found or is not available.'
+                    ], 422);
+                }
+            }
+
+            if (!$appropriation) {
+
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Unable to determine the expense appropriation.'
+                ], 422);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 5. If hierarchy IDs were supplied, verify that they match
+            |    the EXACT appropriation.
+            |--------------------------------------------------------------------------
+            */
+            $hierarchyFields = [
+                'expense_class_id',
+                'expense_type_id',
+                'expense_item_id',
+                'expense_sub_item_id',
+                'expense_sub_type_id',
+                'expense_sub_sub_type_id',
+            ];
+
+            foreach ($hierarchyFields as $field) {
+
+                if (!$request->has($field)) {
+                    continue;
+                }
+
+                $requestedValue = $request->input($field);
+                $actualValue = $appropriation->{$field};
+
+                $requestedValue = (
+                    $requestedValue === '' ||
+                    $requestedValue === null
+                )
+                    ? null
+                    : (int) $requestedValue;
+
+                $actualValue = (
+                    $actualValue === '' ||
+                    $actualValue === null
+                )
+                    ? null
+                    : (int) $actualValue;
+
+                if ($requestedValue !== $actualValue) {
+
+                    DB::rollBack();
+
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Expense hierarchy does not match the selected appropriation.',
+                        'error' => [
+                            'appropriation_id' => $appropriation->id,
+                            'field' => $field,
+                            'requested' => $requestedValue,
+                            'actual' => $actualValue,
+                        ]
+                    ], 422);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 6. Determine the new amount
+            |--------------------------------------------------------------------------
+            */
+            $newAmount = $request->has('amount')
+                ? (float) $request->amount
+                : $oldAmount;
+
+            /*
+            |--------------------------------------------------------------------------
+            | 7. Calculate current usage of the TARGET appropriation
+            |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            | Exclude the current expense detail from the calculation.
+            |
+            | This prevents the old amount from being counted twice when
+            | changing the amount or moving the expense to another account.
+            |--------------------------------------------------------------------------
+            */
+            $alreadyUsed = TranExpenseDetail::query()
+                ->where('appropriation_id', $appropriation->id)
+                ->where('id', '!=', $expenseDetail->id)
+                ->sum('amount');
+
+            $appropriationAmount = (float) $appropriation->amount;
+            $alreadyUsedAmount = (float) $alreadyUsed;
+
+            $availableBalance = max(
+                0,
+                $appropriationAmount - $alreadyUsedAmount
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | 8. Check target appropriation balance
+            |--------------------------------------------------------------------------
+            */
+            if ($availableBalance < $newAmount) {
+
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Insufficient appropriation balance to cover the updated expense.',
+                    'data' => [
+                        'appropriation_id' => $appropriation->id,
+                        'appropriation_amount' => $appropriationAmount,
+                        'already_used' => $alreadyUsedAmount,
+                        'available_balance' => $availableBalance,
+                        'requested_amount' => $newAmount,
+                    ]
+                ], 422);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 9. Update expense detail
+            |--------------------------------------------------------------------------
+            */
+            $updateData = [
+                'appropriation_id' => $appropriation->id,
+                'amount' => $newAmount,
+            ];
+
+            if ($request->has('disbursement_id')) {
+                $updateData['disbursement_id'] = $request->disbursement_id;
+            }
+
+            if ($request->has('particulars')) {
+                $updateData['particulars'] = $request->particulars ?? '';
+            }
+
+            $expenseDetail->update($updateData);
+
+            /*
+            |--------------------------------------------------------------------------
+            | 10. Log the change
+            |--------------------------------------------------------------------------
+            */
+            \Log::info('Expense detail updated:', [
+                'expense_detail_id' => $expenseDetail->id,
+
+                'old_appropriation_id' => $oldAppropriationId,
+                'new_appropriation_id' => $appropriation->id,
+
+                'old_amount' => $oldAmount,
+                'new_amount' => $newAmount,
+
+                'disbursement_id' => $expenseDetail->disbursement_id,
+                'barangay_id' => $user->barangay_id,
             ]);
 
+            DB::commit();
+
+            /*
+            |--------------------------------------------------------------------------
+            | 11. Return updated information
+            |--------------------------------------------------------------------------
+            */
             return response()->json([
                 'status' => true,
                 'message' => 'Expense detail updated successfully',
-                'data' => $expenseDetail
+                'data' => [
+                    'id' => $expenseDetail->id,
+                    'disbursement_id' => $expenseDetail->disbursement_id,
+
+                    'appropriation_id' => $appropriation->id,
+
+                    'amount' => (float) $expenseDetail->amount,
+                    'particulars' => $expenseDetail->particulars,
+
+                    'expense_class_id' =>
+                        $appropriation->expense_class_id,
+
+                    'expense_type_id' =>
+                        $appropriation->expense_type_id,
+
+                    'expense_item_id' =>
+                        $appropriation->expense_item_id,
+
+                    'expense_sub_item_id' =>
+                        $appropriation->expense_sub_item_id,
+
+                    'expense_sub_type_id' =>
+                        $appropriation->expense_sub_type_id,
+
+                    'expense_sub_sub_type_id' =>
+                        $appropriation->expense_sub_sub_type_id,
+
+                    'appropriation_amount' =>
+                        $appropriationAmount,
+
+                    'used_amount' =>
+                        $alreadyUsedAmount + $newAmount,
+
+                    'balance' =>
+                        $availableBalance - $newAmount,
+                ]
             ]);
+
         } catch (\Exception $e) {
-            \Log::error('Error updating expense detail: ' . $e->getMessage());
+
+            DB::rollBack();
+
+            \Log::error(
+                'Error updating expense detail: ' . $e->getMessage()
+            );
+
+            \Log::error(
+                'Stack trace: ' . $e->getTraceAsString()
+            );
+
             return response()->json([
                 'status' => false,
                 'message' => 'Failed to update expense detail',

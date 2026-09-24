@@ -16,6 +16,7 @@ use App\Models\ContDeduction;
 use App\Models\ContBankCheque;
 use App\Models\Admin;
 use App\Models\LibDeductionCode;
+use App\Models\Scopes\BarangayScope;
 
 class ContinuingDisbursementController extends Controller
 {
@@ -226,13 +227,20 @@ class ContinuingDisbursementController extends Controller
             //expenses
             foreach ($validated['expenses'] as $expense) {
 
-                $contAccount = ContApproAccounts::find(
-                    $expense['accountId']
-                );
+                $contAccount = ContApproAccounts::where('id', $expense['accountId'])
+                    ->where('barangay_id', $request->user()->barangay_id)
+                    ->first();
 
                 if (!$contAccount) {
                     throw new \Exception(
-                        "Continuing appropriation account not found"
+                        'Continuing appropriation account not found or does not belong to this barangay.'
+                    );
+                }
+
+                if ($contAccount->current_amount < $expense['amount']) {
+                    throw new \Exception(
+                        'Insufficient continuing appropriation balance for account ID: ' .
+                        $contAccount->id
                     );
                 }
 
@@ -250,7 +258,11 @@ class ContinuingDisbursementController extends Controller
             //Deductions
             foreach ($validated['deductions'] ?? [] as $deduction) {
 
-                $libDeduction = LibDeductionCode::find($deduction['deduction_code_id']);
+                $deductionCodeId = $deduction['deduction_code_id'] ?? null;
+
+                $libDeduction = $deductionCodeId
+                    ? LibDeductionCode::find($deductionCodeId)
+                    : null;
 
                 ContDeduction::create([
 
@@ -311,9 +323,14 @@ class ContinuingDisbursementController extends Controller
                 'status' => true,
                 'message' => 'Continuing disbursement created successfully',
                 'data' => $disbursement->load([
-                    'expenseDetails',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubItem',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubType',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubSubType',
                     'deductions',
-                    'bankCheques'
+                    'bankCheques',
                 ])
             ]);
 
@@ -618,14 +635,20 @@ class ContinuingDisbursementController extends Controller
 
             foreach ($validated['expenses'] as $expense) {
 
-                $account = ContApproAccounts::find(
-                    $expense['accountId']
-                );
+                $account = ContApproAccounts::where('id', $expense['accountId'])
+                    ->where('barangay_id', $request->user()->barangay_id)
+                    ->first();
 
                 if (!$account) {
-
                     throw new \Exception(
-                        'Continuing appropriation account not found.'
+                        'Continuing appropriation account not found or does not belong to this barangay.'
+                    );
+                }
+
+                if ($account->current_amount < $expense['amount']) {
+                    throw new \Exception(
+                        'Insufficient continuing appropriation balance for account ID: ' .
+                        $account->id
                     );
                 }
 
@@ -649,7 +672,11 @@ class ContinuingDisbursementController extends Controller
 
             foreach ($validated['deductions'] ?? [] as $deduction) {
 
-                $libDeduction = LibDeductionCode::find($deduction['deduction_code_id']);
+                $deductionCodeId = $deduction['deduction_code_id'] ?? null;
+
+                $libDeduction = $deductionCodeId
+                    ? LibDeductionCode::find($deductionCodeId)
+                    : null;
 
                 ContDeduction::create([
 
@@ -719,9 +746,14 @@ class ContinuingDisbursementController extends Controller
                 'status' => true,
                 'message' => 'Continuing disbursement updated successfully.',
                 'data' => $disbursement->load([
-                    'expenseDetails',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseClass',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseType',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseItem',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubItem',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubType',
+                    'expenseDetails.contApproAccount.transactionAppropriation.expenseSubSubType',
                     'deductions',
-                    'bankCheques'
+                    'bankCheques',
                 ])
             ]);
 
@@ -798,14 +830,45 @@ class ContinuingDisbursementController extends Controller
 
     private function getAccountNameFromAppropriationId($appropriationId)
     {
-        $appr = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem'])->find($appropriationId);
+        $appr = TranAppropriation::with([
+            'expenseClass',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+        ])->find($appropriationId);
+
         if (!$appr) {
             return 'Unknown Account';
         }
+
         $parts = [];
-        if ($appr->expenseClass) { $parts[] = $appr->expenseClass->name; }
-        if ($appr->expenseType) { $parts[] = $appr->expenseType->name; }
-        if ($appr->expenseItem) { $parts[] = $appr->expenseItem->name; }
+
+        if ($appr->expenseClass) {
+            $parts[] = $appr->expenseClass->name;
+        }
+
+        if ($appr->expenseType) {
+            $parts[] = $appr->expenseType->name;
+        }
+
+        if ($appr->expenseItem) {
+            $parts[] = $appr->expenseItem->name;
+        }
+
+        if ($appr->expenseSubItem) {
+            $parts[] = $appr->expenseSubItem->name;
+        }
+
+        if ($appr->expenseSubType) {
+            $parts[] = $appr->expenseSubType->name;
+        }
+
+        if ($appr->expenseSubSubType) {
+            $parts[] = $appr->expenseSubSubType->name;
+        }
+
         return implode(' > ', $parts) ?: 'Unknown Account';
     }
 

@@ -14,45 +14,120 @@ use App\Http\Controllers\AdminAuthController;
 class BudgetAugmentationController extends Controller
 {
     /**
-     * Helper method to build account names without extra separators
+     * Helper method to build complete six-level account names
      */
-    private function buildAccountName($expenseClass, $expenseType, $expenseItem)
+    private function buildAccountName(
+        $expenseClass = null,
+        $expenseType = null,
+        $expenseItem = null,
+        $expenseSubItem = null,
+        $expenseSubType = null,
+        $expenseSubSubType = null
+    )
     {
         $parts = [];
-        if ($expenseClass && $expenseClass->name) $parts[] = $expenseClass->name;
-        if ($expenseType && $expenseType->name) $parts[] = $expenseType->name;
-        if ($expenseItem && $expenseItem->name) $parts[] = $expenseItem->name;
+
+        if ($expenseClass && $expenseClass->name) {
+            $parts[] = $expenseClass->name;
+        }
+
+        if ($expenseType && $expenseType->name) {
+            $parts[] = $expenseType->name;
+        }
+
+        if ($expenseItem && $expenseItem->name) {
+            $parts[] = $expenseItem->name;
+        }
+
+        if ($expenseSubItem && $expenseSubItem->name) {
+            $parts[] = $expenseSubItem->name;
+        }
+
+        if ($expenseSubType && $expenseSubType->name) {
+            $parts[] = $expenseSubType->name;
+        }
+
+        if ($expenseSubSubType && $expenseSubSubType->name) {
+            $parts[] = $expenseSubSubType->name;
+        }
+
         return implode(' > ', $parts);
     }
 
     /**
-     * Helper method to build shortened account names for logging
+     * Helper method to build shortened complete account names for logging
      */
-    private function buildShortAccountName($expenseClass, $expenseType, $expenseItem)
+    private function buildShortAccountName(
+        $expenseClass = null,
+        $expenseType = null,
+        $expenseItem = null,
+        $expenseSubItem = null,
+        $expenseSubType = null,
+        $expenseSubSubType = null
+    )
     {
         $parts = [];
+
         if ($expenseClass && $expenseClass->name) {
-            // Shorten class name by removing common prefixes and keeping key parts
             $className = $expenseClass->name;
+
             if (strlen($className) > 30) {
                 $className = substr($className, 0, 30) . '...';
             }
+
             $parts[] = $className;
         }
+
         if ($expenseType && $expenseType->name) {
             $typeName = $expenseType->name;
+
             if (strlen($typeName) > 20) {
                 $typeName = substr($typeName, 0, 20) . '...';
             }
+
             $parts[] = $typeName;
         }
+
         if ($expenseItem && $expenseItem->name) {
             $itemName = $expenseItem->name;
+
             if (strlen($itemName) > 15) {
                 $itemName = substr($itemName, 0, 15) . '...';
             }
+
             $parts[] = $itemName;
         }
+
+        if ($expenseSubItem && $expenseSubItem->name) {
+            $subItemName = $expenseSubItem->name;
+
+            if (strlen($subItemName) > 15) {
+                $subItemName = substr($subItemName, 0, 15) . '...';
+            }
+
+            $parts[] = $subItemName;
+        }
+
+        if ($expenseSubType && $expenseSubType->name) {
+            $subTypeName = $expenseSubType->name;
+
+            if (strlen($subTypeName) > 15) {
+                $subTypeName = substr($subTypeName, 0, 15) . '...';
+            }
+
+            $parts[] = $subTypeName;
+        }
+
+        if ($expenseSubSubType && $expenseSubSubType->name) {
+            $subSubTypeName = $expenseSubSubType->name;
+
+            if (strlen($subSubTypeName) > 15) {
+                $subSubTypeName = substr($subSubTypeName, 0, 15) . '...';
+            }
+
+            $parts[] = $subSubTypeName;
+        }
+
         return implode(' > ', $parts);
     }
 
@@ -87,14 +162,20 @@ class BudgetAugmentationController extends Controller
             'from_appropriation_id' => $detail->from_appropriation_id,
             'to_appropriation_id' => $detail->to_appropriation_id,
             'from_account' => $this->buildAccountName(
-                $detail->fromAppropriation->expenseClass,
-                $detail->fromAppropriation->expenseType,
-                $detail->fromAppropriation->expenseItem
+                $detail->fromAppropriation?->expenseClass,
+                $detail->fromAppropriation?->expenseType,
+                $detail->fromAppropriation?->expenseItem,
+                $detail->fromAppropriation?->expenseSubItem,
+                $detail->fromAppropriation?->expenseSubType,
+                $detail->fromAppropriation?->expenseSubSubType
             ),
             'to_account' => $this->buildAccountName(
-                $detail->toAppropriation->expenseClass,
-                $detail->toAppropriation->expenseType,
-                $detail->toAppropriation->expenseItem
+                $detail->toAppropriation?->expenseClass,
+                $detail->toAppropriation?->expenseType,
+                $detail->toAppropriation?->expenseItem,
+                $detail->toAppropriation?->expenseSubItem,
+                $detail->toAppropriation?->expenseSubType,
+                $detail->toAppropriation?->expenseSubSubType
             ),
             'from_budget_source' => $fromBudgetSource,
             'to_budget_source' => $toBudgetSource,
@@ -103,123 +184,490 @@ class BudgetAugmentationController extends Controller
         ];
     }
 
-
-
     /**
-     * Helper method to perform money transfer between appropriations
-     * Handles grouped appropriations by finding all matching appropriations with the same expense hierarchy
-     * Can also create new appropriations for unallocated accounts
+     * Helper method to perform money transfer between appropriations.
+     *
+     * Supports the complete six-level expense hierarchy:
+     *
+     * Expense Class
+     *   -> Expense Type
+     *      -> Expense Item
+     *         -> Expense Sub Item
+     *            -> Expense Sub Type
+     *               -> Expense Sub Sub Type
      */
-    private function performTransfer($fromAppropriation, $toAppropriation, $amount, $toExpenseData = null, $userId = null)
+    private function performTransfer(
+        $fromAppropriation,
+        $toAppropriation,
+        $amount,
+        $toExpenseData = null,
+        $userId = null
+    )
     {
         if (!$fromAppropriation) {
             throw new \Exception('Source appropriation not found');
         }
 
-        // Find all appropriations with the same expense hierarchy as the source appropriation
-        $sourceAppropriations = TranAppropriation::where('barangay_id', $fromAppropriation->barangay_id)
+        $amount = (float) $amount;
+
+        if ($amount <= 0) {
+            throw new \Exception('Transfer amount must be greater than zero');
+        }
+
+        /*
+        * =============================================================
+        * SOURCE APPROPRIATION GROUP
+        * =============================================================
+        *
+        * Match the COMPLETE six-level hierarchy.
+        */
+        $sourceAppropriations = TranAppropriation::where(
+            'barangay_id',
+            $fromAppropriation->barangay_id
+        )
             ->where('status', 'committed')
             ->where('expense_class_id', $fromAppropriation->expense_class_id)
             ->where('expense_type_id', $fromAppropriation->expense_type_id)
             ->where('expense_item_id', $fromAppropriation->expense_item_id)
+            ->where('expense_sub_item_id', $fromAppropriation->expense_sub_item_id)
+            ->where('expense_sub_type_id', $fromAppropriation->expense_sub_type_id)
+            ->where(
+                'expense_sub_sub_type_id',
+                $fromAppropriation->expense_sub_sub_type_id
+            )
             ->orderBy('created_at', 'asc')
             ->get();
 
-        // Calculate total available balance across all source appropriations
-        $totalAvailableBalance = $sourceAppropriations->sum('amount');
-        
+        $totalAvailableBalance = (float) $sourceAppropriations->sum('amount');
+
         if ($totalAvailableBalance < $amount) {
-            throw new \Exception('Insufficient amount in source appropriation group. Available: ' . $totalAvailableBalance . ', Requested: ' . $amount);
+            throw new \Exception(
+                'Insufficient amount in source appropriation group. ' .
+                'Available: ' . number_format($totalAvailableBalance, 2) .
+                ', Requested: ' . number_format($amount, 2)
+            );
         }
 
-        // Distribute the deduction across source appropriations (FIFO order)
+        /*
+        * =============================================================
+        * DEDUCT FROM SOURCE
+        * =============================================================
+        */
         $remainingAmount = $amount;
+
         foreach ($sourceAppropriations as $sourceApp) {
-            if ($remainingAmount <= 0) break;
-            
-            $availableInSource = $sourceApp->amount;
-            $amountToDeduct = min($remainingAmount, $availableInSource);
-            
-            $sourceApp->decrement('amount', $amountToDeduct);
+            if ($remainingAmount <= 0) {
+                break;
+            }
+
+            $availableInSource = (float) $sourceApp->amount;
+
+            if ($availableInSource <= 0) {
+                continue;
+            }
+
+            $amountToDeduct = min(
+                $remainingAmount,
+                $availableInSource
+            );
+
+            $sourceApp->decrement(
+                'amount',
+                $amountToDeduct
+            );
+
             $remainingAmount -= $amountToDeduct;
         }
 
-        // Handle destination appropriation
+        if ($remainingAmount > 0) {
+            throw new \Exception(
+                'Unable to complete source appropriation transfer. ' .
+                'Remaining amount: ' . number_format($remainingAmount, 2)
+            );
+        }
+
+        /*
+        * =============================================================
+        * DESTINATION: EXISTING APPROPRIATION
+        * =============================================================
+        *
+        * IMPORTANT:
+        * If the frontend supplied a specific appropriation ID,
+        * increment THAT EXACT ROW.
+        *
+        * Do not search for the oldest matching appropriation.
+        */
         if ($toAppropriation) {
-            // Existing appropriation - find all appropriations with the same expense hierarchy
-            $destinationAppropriations = TranAppropriation::where('barangay_id', $toAppropriation->barangay_id)
-                ->where('status', 'committed')
-                ->where('expense_class_id', $toAppropriation->expense_class_id)
-                ->where('expense_type_id', $toAppropriation->expense_type_id)
-                ->where('expense_item_id', $toAppropriation->expense_item_id)
-                ->orderBy('created_at', 'asc')
-                ->get();
 
-            // Add to the first destination appropriation
-            $firstDestination = $destinationAppropriations->first();
-            $firstDestination->increment('amount', $amount);
-
-            return [
-                'from_appropriation_id' => $fromAppropriation->id,
-                'to_appropriation_id' => $toAppropriation->id,
-                'amount_transferred' => $amount,
-                'source_appropriations_used' => $sourceAppropriations->pluck('id')->toArray(),
-                'destination_appropriation_used' => $firstDestination->id
-            ];
-        } else {
-            // Create new appropriation for unallocated account
-            if (!$toExpenseData) {
-                throw new \Exception('Expense data is required to create new appropriation for unallocated account');
+            /*
+            * Security check:
+            * Destination must belong to the same barangay.
+            */
+            if (
+                (int) $toAppropriation->barangay_id !==
+                (int) $fromAppropriation->barangay_id
+            ) {
+                throw new \Exception(
+                    'Source and destination appropriations must belong to the same barangay.'
+                );
             }
 
-            // Create new appropriation
-            $newAppropriation = TranAppropriation::create([
-                'barangay_id' => $fromAppropriation->barangay_id,
-                'budget_id' => $fromAppropriation->budget_id, // Use same budget as source
-                'expense_class_id' => $toExpenseData['expense_class_id'],
-                'expense_type_id' => $toExpenseData['expense_type_id'],
-                'expense_item_id' => $toExpenseData['expense_item_id'],
-                'expense_sub_item_id' => $toExpenseData['expense_sub_item_id'] ?? null,
-                'amount' => $amount,
-                'status' => 'committed',
-                'transaction_date' => now(), // Add transaction_date to avoid NULL constraint violation
-                'user_id' => $userId ?? $fromAppropriation->user_id // Add user_id to avoid NULL constraint violation
-            ]);
+            /*
+            * Destination must be committed.
+            */
+            if ($toAppropriation->status !== 'committed') {
+                throw new \Exception(
+                    'Destination appropriation is not committed.'
+                );
+            }
+
+            /*
+            * Make sure the selected destination really represents
+            * the complete six-level hierarchy supplied by the selected row.
+            */
+            $hierarchyFields = [
+                'expense_class_id',
+                'expense_type_id',
+                'expense_item_id',
+                'expense_sub_item_id',
+                'expense_sub_type_id',
+                'expense_sub_sub_type_id',
+            ];
+
+            foreach ($hierarchyFields as $field) {
+                $fromValue = $toAppropriation->{$field};
+
+                /*
+                * Nothing else is required here because the destination
+                * appropriation itself is the selected account.
+                */
+            }
+
+            /*
+            * ADD TO THE EXACT SELECTED DESTINATION ROW.
+            */
+            $toAppropriation->increment('amount', $amount);
 
             return [
-                'from_appropriation_id' => $fromAppropriation->id,
-                'to_appropriation_id' => $newAppropriation->id,
-                'amount_transferred' => $amount,
-                'source_appropriations_used' => $sourceAppropriations->pluck('id')->toArray(),
-                'destination_appropriation_used' => $newAppropriation->id,
-                'new_appropriation_created' => true
+                'from_appropriation_id' =>
+                    $fromAppropriation->id,
+
+                'to_appropriation_id' =>
+                    $toAppropriation->id,
+
+                'amount_transferred' =>
+                    $amount,
+
+                'source_appropriations_used' =>
+                    $sourceAppropriations
+                        ->pluck('id')
+                        ->toArray(),
+
+                'destination_appropriation_used' =>
+                    $toAppropriation->id,
+
+                'new_appropriation_created' =>
+                    false,
             ];
         }
+
+        /*
+        * =============================================================
+        * DESTINATION: CREATE NEW APPROPRIATION
+        * =============================================================
+        */
+        if (!$toExpenseData) {
+            throw new \Exception(
+                'Expense data is required to create a new appropriation ' .
+                'for unallocated account'
+            );
+        }
+
+        /*
+        * Normalize empty strings to NULL.
+        */
+        $normalizeId = function ($value) {
+            return (
+                $value === '' ||
+                $value === null
+            )
+                ? null
+                : (int) $value;
+        };
+
+        $expenseClassId =
+            $normalizeId(
+                $toExpenseData['expense_class_id'] ?? null
+            );
+
+        $expenseTypeId =
+            $normalizeId(
+                $toExpenseData['expense_type_id'] ?? null
+            );
+
+        $expenseItemId =
+            $normalizeId(
+                $toExpenseData['expense_item_id'] ?? null
+            );
+
+        $expenseSubItemId =
+            $normalizeId(
+                $toExpenseData['expense_sub_item_id'] ?? null
+            );
+
+        $expenseSubTypeId =
+            $normalizeId(
+                $toExpenseData['expense_sub_type_id'] ?? null
+            );
+
+        $expenseSubSubTypeId =
+            $normalizeId(
+                $toExpenseData['expense_sub_sub_type_id'] ?? null
+            );
+
+        /*
+        * =============================================================
+        * VALIDATE HIERARCHY
+        * =============================================================
+        */
+        if (
+            $expenseTypeId !== null &&
+            $expenseClassId === null
+        ) {
+            throw new \Exception(
+                'Invalid expense hierarchy: expense_type_id requires expense_class_id.'
+            );
+        }
+
+        if (
+            $expenseItemId !== null &&
+            $expenseTypeId === null
+        ) {
+            throw new \Exception(
+                'Invalid expense hierarchy: expense_item_id requires expense_type_id.'
+            );
+        }
+
+        if (
+            $expenseSubItemId !== null &&
+            $expenseItemId === null
+        ) {
+            throw new \Exception(
+                'Invalid expense hierarchy: expense_sub_item_id requires expense_item_id.'
+            );
+        }
+
+        if (
+            $expenseSubTypeId !== null &&
+            $expenseSubItemId === null
+        ) {
+            throw new \Exception(
+                'Invalid expense hierarchy: expense_sub_type_id requires expense_sub_item_id.'
+            );
+        }
+
+        if (
+            $expenseSubSubTypeId !== null &&
+            $expenseSubTypeId === null
+        ) {
+            throw new \Exception(
+                'Invalid expense hierarchy: expense_sub_sub_type_id requires expense_sub_type_id.'
+            );
+        }
+
+        /*
+        * =============================================================
+        * FIND EXISTING EXACT DESTINATION
+        * =============================================================
+        */
+        $existingDestination = TranAppropriation::query()
+            ->where(
+                'barangay_id',
+                $fromAppropriation->barangay_id
+            )
+            ->where('status', 'committed')
+            ->where('expense_class_id', $expenseClassId)
+            ->where('expense_type_id', $expenseTypeId)
+            ->where('expense_item_id', $expenseItemId)
+            ->where('expense_sub_item_id', $expenseSubItemId)
+            ->where('expense_sub_type_id', $expenseSubTypeId)
+            ->where(
+                'expense_sub_sub_type_id',
+                $expenseSubSubTypeId
+            )
+            ->orderBy('created_at', 'asc')
+            ->first();
+
+        /*
+        * If an exact destination already exists, add to it.
+        */
+        if ($existingDestination) {
+
+            $existingDestination->increment(
+                'amount',
+                $amount
+            );
+
+            return [
+                'from_appropriation_id' =>
+                    $fromAppropriation->id,
+
+                'to_appropriation_id' =>
+                    $existingDestination->id,
+
+                'amount_transferred' =>
+                    $amount,
+
+                'source_appropriations_used' =>
+                    $sourceAppropriations
+                        ->pluck('id')
+                        ->toArray(),
+
+                'destination_appropriation_used' =>
+                    $existingDestination->id,
+
+                'new_appropriation_created' =>
+                    false,
+            ];
+        }
+
+        /*
+        * =============================================================
+        * CREATE NEW DESTINATION APPROPRIATION
+        * =============================================================
+        */
+        $newAppropriation = TranAppropriation::create([
+            'barangay_id' =>
+                $fromAppropriation->barangay_id,
+
+            'budget_id' =>
+                $fromAppropriation->budget_id,
+
+            'expense_class_id' =>
+                $expenseClassId,
+
+            'expense_type_id' =>
+                $expenseTypeId,
+
+            'expense_item_id' =>
+                $expenseItemId,
+
+            'expense_sub_item_id' =>
+                $expenseSubItemId,
+
+            'expense_sub_type_id' =>
+                $expenseSubTypeId,
+
+            'expense_sub_sub_type_id' =>
+                $expenseSubSubTypeId,
+
+            'amount' =>
+                $amount,
+
+            'status' =>
+                'committed',
+
+            'transaction_date' =>
+                now(),
+
+            'user_id' =>
+                $userId ??
+                $fromAppropriation->user_id,
+        ]);
+
+        \Log::info(
+            'Created augmentation destination appropriation',
+            [
+                'appropriation_id' =>
+                    $newAppropriation->id,
+
+                'barangay_id' =>
+                    $newAppropriation->barangay_id,
+
+                'budget_id' =>
+                    $newAppropriation->budget_id,
+
+                'expense_class_id' =>
+                    $newAppropriation->expense_class_id,
+
+                'expense_type_id' =>
+                    $newAppropriation->expense_type_id,
+
+                'expense_item_id' =>
+                    $newAppropriation->expense_item_id,
+
+                'expense_sub_item_id' =>
+                    $newAppropriation->expense_sub_item_id,
+
+                'expense_sub_type_id' =>
+                    $newAppropriation->expense_sub_type_id,
+
+                'expense_sub_sub_type_id' =>
+                    $newAppropriation->expense_sub_sub_type_id,
+
+                'amount' =>
+                    $newAppropriation->amount,
+            ]
+        );
+
+        return [
+            'from_appropriation_id' =>
+                $fromAppropriation->id,
+
+            'to_appropriation_id' =>
+                $newAppropriation->id,
+
+            'amount_transferred' =>
+                $amount,
+
+            'source_appropriations_used' =>
+                $sourceAppropriations
+                    ->pluck('id')
+                    ->toArray(),
+
+            'destination_appropriation_used' =>
+                $newAppropriation->id,
+
+            'new_appropriation_created' =>
+                true,
+        ];
     }
 
     /**
      * Display a listing of budget augmentations
      */
-public function index(Request $request)
-{
-    try {
-        $query = BudgetAugmentation::with([
-            'budget', 
-            'details.fromAppropriation', 
-            'details.toAppropriation',
-            'barangay'
-        ])->forBarangay($request->user()->barangay_id);
+    public function index(Request $request)
+    {
+        try {
+            $query = BudgetAugmentation::with([
+                'budget',
+                'details.fromAppropriation.expenseClass',
+                'details.fromAppropriation.expenseType',
+                'details.fromAppropriation.expenseItem',
+                'details.fromAppropriation.expenseSubItem',
+                'details.fromAppropriation.expenseSubType',
+                'details.fromAppropriation.expenseSubSubType',
 
-        // Add year filter
-        if ($request->filled('year')) {
-            $query->whereHas('budget.fiscalYear', function($q) use ($request) {
-                $q->where('year', $request->year);
-            });
-        } else {
-            $query->whereHas('budget.fiscalYear', function($q) {
-                $q->where('year', now()->year);
-            });
-        }
+                'details.toAppropriation.expenseClass',
+                'details.toAppropriation.expenseType',
+                'details.toAppropriation.expenseItem',
+                'details.toAppropriation.expenseSubItem',
+                'details.toAppropriation.expenseSubType',
+                'details.toAppropriation.expenseSubSubType',
+
+                'barangay',
+            ])->forBarangay($request->user()->barangay_id);
+
+            // Add year filter
+            if ($request->filled('year')) {
+                $query->whereHas('budget.fiscalYear', function($q) use ($request) {
+                    $q->where('year', $request->year);
+                });
+            } else {
+                $query->whereHas('budget.fiscalYear', function($q) {
+                    $q->where('year', now()->year);
+                });
+            }
 
             // Apply filters
             if ($request->filled('search')) {
@@ -259,7 +707,7 @@ public function index(Request $request)
         } catch (\Exception $e) {
             \Log::error('BudgetAugmentation index error: ' . $e->getMessage());
             \Log::error('Stack trace: ' . $e->getTraceAsString());
-            
+
             return response()->json([
                 'status' => false,
                 'message' => 'An error occurred while fetching augmentations',
@@ -275,10 +723,23 @@ public function index(Request $request)
     {
         try {
             $query = BudgetAugmentation::with([
-                'budget', 
-                'details.fromAppropriation', 
-                'details.toAppropriation',
-                'barangay'
+                'budget',
+
+                'details.fromAppropriation.expenseClass',
+                'details.fromAppropriation.expenseType',
+                'details.fromAppropriation.expenseItem',
+                'details.fromAppropriation.expenseSubItem',
+                'details.fromAppropriation.expenseSubType',
+                'details.fromAppropriation.expenseSubSubType',
+
+                'details.toAppropriation.expenseClass',
+                'details.toAppropriation.expenseType',
+                'details.toAppropriation.expenseItem',
+                'details.toAppropriation.expenseSubItem',
+                'details.toAppropriation.expenseSubType',
+                'details.toAppropriation.expenseSubSubType',
+
+                'barangay',
             ]);
 
             // Filter by barangay_id if provided
@@ -335,7 +796,7 @@ public function index(Request $request)
         } catch (\Exception $e) {
             \Log::error('BudgetAugmentation adminIndex error: ' . $e->getMessage());
             \Log::error('Stack trace: ' . $e->getTraceAsString());
-            
+
             return response()->json([
                 'status' => false,
                 'message' => 'An error occurred while fetching augmentations',
@@ -352,150 +813,432 @@ public function index(Request $request)
         $validator = Validator::make($request->all(), [
             'augmentation_date' => 'required|date',
             'remarks' => 'nullable|string',
+
             'details' => 'required|array|min:1',
-            'details.*.from_appropriation_id' => 'required|exists:tran_appropriations,id',
-            'details.*.to_appropriation_id' => 'nullable|exists:tran_appropriations,id', // Allow null for unallocated accounts
-            'details.*.amount' => 'required|numeric|min:0',
-            'details.*.particulars' => 'nullable|string',
-            'barangay_id' => 'nullable|exists:barangays,id' // Added for admin
+
+            'details.*.from_appropriation_id' =>
+                'required|exists:tran_appropriations,id',
+
+            'details.*.to_appropriation_id' =>
+                'nullable|exists:tran_appropriations,id',
+
+            'details.*.amount' =>
+                'required|numeric|min:0.01',
+
+            'details.*.particulars' =>
+                'nullable|string',
+
+            'details.*.to_expense_data' =>
+                'nullable|array',
+
+            'details.*.to_expense_data.expense_class_id' =>
+                'nullable|integer|exists:lib_expense_classes,id',
+
+            'details.*.to_expense_data.expense_type_id' =>
+                'nullable|integer|exists:lib_expense_types,id',
+
+            'details.*.to_expense_data.expense_item_id' =>
+                'nullable|integer|exists:lib_expense_items,id',
+
+            'details.*.to_expense_data.expense_sub_item_id' =>
+                'nullable|integer|exists:lib_expense_sub_items,id',
+
+            'details.*.to_expense_data.expense_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_types,id',
+
+            'details.*.to_expense_data.expense_sub_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_sub_types,id',
+
+            // Used by admin users
+            'barangay_id' =>
+                'nullable|exists:barangays,id',
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'status' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
         return DB::transaction(function () use ($request) {
-            // Generate reference number
-            $refNumber = 'AUG-' . date('y') . '-' . date('m') . '-' . str_pad(BudgetAugmentation::count() + 1, 3, '0', STR_PAD_LEFT);
 
-            // Calculate total amount
-            $totalAmount = collect($request->details)->sum('amount');
+            /*
+            |--------------------------------------------------------------------------
+            | DETERMINE BARANGAY
+            |--------------------------------------------------------------------------
+            */
 
-            // Find the first appropriation to determine the budget
+            $user = $request->user();
+
+            $barangayId = $request->filled('barangay_id')
+                ? (int) $request->barangay_id
+                : (int) $user->barangay_id;
+
+            if (!$barangayId) {
+                throw new \Exception(
+                    'Unable to determine barangay for this augmentation.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | GENERATE REFERENCE NUMBER
+            |--------------------------------------------------------------------------
+            */
+
+            $prefix = 'AUG-' . now()->format('y-m') . '-';
+
+            $lastRef = BudgetAugmentation::withoutGlobalScopes()
+                ->where('ref_number', 'like', $prefix . '%')
+                ->orderByDesc('ref_number')
+                ->value('ref_number');
+
+            $nextNumber = $lastRef
+                ? ((int) substr($lastRef, -3)) + 1
+                : 1;
+
+            $refNumber = $prefix . str_pad($nextNumber, 3, '0', STR_PAD_LEFT);
+
+            /*
+            |--------------------------------------------------------------------------
+            | CALCULATE TOTAL
+            |--------------------------------------------------------------------------
+            */
+
+            $totalAmount = collect($request->details)
+                ->sum(function ($detail) {
+                    return (float) $detail['amount'];
+                });
+
+            if ($totalAmount <= 0) {
+                throw new \Exception(
+                    'Total augmentation amount must be greater than zero.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | GET FIRST SOURCE APPROPRIATION
+            |--------------------------------------------------------------------------
+            |
+            | Used to determine the budget of the augmentation.
+            |
+            */
+
             $firstDetail = $request->details[0];
-            $firstFromAppropriation = TranAppropriation::find($firstDetail['from_appropriation_id']);
+
+            $firstFromAppropriation = TranAppropriation::query()
+                ->where('id', $firstDetail['from_appropriation_id'])
+                ->where('barangay_id', $barangayId)
+                ->where('status', 'committed')
+                ->first();
 
             if (!$firstFromAppropriation) {
-                throw new \Exception('Source appropriation not found with ID: ' . $firstDetail['from_appropriation_id']);
+                throw new \Exception(
+                    'Source appropriation not found, does not belong to this barangay, ' .
+                    'or is not committed. ID: ' .
+                    $firstDetail['from_appropriation_id']
+                );
             }
 
-            // Get the budget from the first appropriation
             $correctBudget = $firstFromAppropriation->budget;
 
-            // Determine barangay_id based on user type
-            $barangayId = null;
-            if ($request->barangay_id) {
-                // Admin user providing barangay_id
-                $barangayId = $request->barangay_id;
-            } else {
-                // Regular user - use their barangay_id
-                $barangayId = $request->user()->barangay_id;
+            if (!$correctBudget) {
+                throw new \Exception(
+                    'Budget not found for source appropriation ID: ' .
+                    $firstFromAppropriation->id
+                );
             }
 
-            // Create budget augmentation
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE AUGMENTATION
+            |--------------------------------------------------------------------------
+            */
+
             $augmentation = BudgetAugmentation::create([
-                'barangay_id' => $barangayId, // Use determined barangayId
+                'barangay_id' => $barangayId,
                 'budget_id' => $correctBudget->id,
                 'ref_number' => $refNumber,
                 'augmentation_date' => $request->augmentation_date,
                 'total_amount' => $totalAmount,
                 'remarks' => $request->remarks,
-                'user_id' => $request->user()->id
+                'user_id' => $user->id,
             ]);
 
             $logDetails = [];
-            // Create augmentation details and perform transfers
-            foreach ($request->details as $detail) {
-                // Find source appropriation (FROM)
-                $fromAppropriation = TranAppropriation::find($detail['from_appropriation_id']);
 
-                // Find destination appropriation (TO) - can be null for unallocated accounts
-                $toAppropriation = $detail['to_appropriation_id'] ? TranAppropriation::find($detail['to_appropriation_id']) : null;
+            /*
+            |--------------------------------------------------------------------------
+            | PROCESS TRANSFERS
+            |--------------------------------------------------------------------------
+            */
 
-                if (!$fromAppropriation) {
-                    throw new \Exception('Source appropriation not found with ID: ' . $detail['from_appropriation_id']);
+            foreach ($request->details as $index => $detail) {
+
+                $amount = (float) $detail['amount'];
+
+                if ($amount <= 0) {
+                    throw new \Exception(
+                        'Transfer amount must be greater than zero.'
+                    );
                 }
 
-                // Prepare expense data for creating new appropriation if needed
+                /*
+                |--------------------------------------------------------------------------
+                | SOURCE
+                |--------------------------------------------------------------------------
+                */
+
+                $fromAppropriation = TranAppropriation::query()
+                    ->where('id', $detail['from_appropriation_id'])
+                    ->where('barangay_id', $barangayId)
+                    ->where('status', 'committed')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$fromAppropriation) {
+                    throw new \Exception(
+                        'Source appropriation not found or is not available. ' .
+                        'ID: ' . $detail['from_appropriation_id']
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | DESTINATION
+                |--------------------------------------------------------------------------
+                */
+
+                $toAppropriation = null;
+
+                if (
+                    isset($detail['to_appropriation_id']) &&
+                    $detail['to_appropriation_id'] !== null &&
+                    $detail['to_appropriation_id'] !== ''
+                ) {
+                    $toAppropriation = TranAppropriation::query()
+                        ->where('id', $detail['to_appropriation_id'])
+                        ->where('barangay_id', $barangayId)
+                        ->where('status', 'committed')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (!$toAppropriation) {
+                        throw new \Exception(
+                            'Destination appropriation not found or is not available. ' .
+                            'ID: ' . $detail['to_appropriation_id']
+                        );
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | PREVENT SAME SOURCE / DESTINATION
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $toAppropriation &&
+                    $fromAppropriation->id === $toAppropriation->id
+                ) {
+                    throw new \Exception(
+                        'Source and destination appropriation cannot be the same.'
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | PREPARE NEW DESTINATION DATA
+                |--------------------------------------------------------------------------
+                */
+
                 $toExpenseData = null;
-                if (!$toAppropriation && isset($detail['to_expense_data'])) {
+
+                if (!$toAppropriation) {
+
+                    if (
+                        !isset($detail['to_expense_data']) ||
+                        !is_array($detail['to_expense_data'])
+                    ) {
+                        throw new \Exception(
+                            'Destination expense data is required when no destination appropriation is selected.'
+                        );
+                    }
+
                     $toExpenseData = $detail['to_expense_data'];
                 }
 
-                // Perform the actual money transfer
-                $transferResult = $this->performTransfer($fromAppropriation, $toAppropriation, $detail['amount'], $toExpenseData, $request->user()->id);
+                /*
+                |--------------------------------------------------------------------------
+                | PERFORM TRANSFER
+                |--------------------------------------------------------------------------
+                */
 
-                // Adjust budgets if transfer crosses budgets
+                $transferResult = $this->performTransfer(
+                    $fromAppropriation,
+                    $toAppropriation,
+                    $amount,
+                    $toExpenseData,
+                    $user->id
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | BUDGET ADJUSTMENT
+                |--------------------------------------------------------------------------
+                */
+
                 $fromBudgetId = $fromAppropriation->budget_id;
-                $toBudgetId = $toAppropriation ? $toAppropriation->budget_id : $fromBudgetId; // New appropriations use same budget as source
-                
+
+                /*
+                | If a new destination was created, performTransfer()
+                | returns its actual appropriation ID.
+                */
+                $actualToAppropriation = TranAppropriation::query()
+                    ->where('id', $transferResult['to_appropriation_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$actualToAppropriation) {
+                    throw new \Exception(
+                        'Destination appropriation could not be resolved after transfer.'
+                    );
+                }
+
+                $toBudgetId = $actualToAppropriation->budget_id;
+
+                /*
+                | Only adjust budget augmentation when the transfer
+                | actually crosses budgets.
+                */
                 if ($fromBudgetId !== $toBudgetId) {
-                    // Deduct from source budget's augmentation (money moved out)
-                    $fromBudget = \App\Models\Budget::find($fromBudgetId);
+
+                    $fromBudget = Budget::find($fromBudgetId);
+                    $toBudget = Budget::find($toBudgetId);
+
                     if ($fromBudget) {
-                        $fromBudget->decrement('augmentation', $detail['amount']);
+                        $fromBudget->decrement(
+                            'augmentation',
+                            $amount
+                        );
                     }
-                    // Add to destination budget's augmentation (money moved in)
-                    $toBudget = \App\Models\Budget::find($toBudgetId);
+
                     if ($toBudget) {
-                        $toBudget->increment('augmentation', $detail['amount']);
+                        $toBudget->increment(
+                            'augmentation',
+                            $amount
+                        );
                     }
                 }
 
-                // Create augmentation detail record
+                /*
+                |--------------------------------------------------------------------------
+                | CREATE AUGMENTATION DETAIL
+                |--------------------------------------------------------------------------
+                */
+
                 BudgetAugmentationDetail::create([
-                    'budget_augmentation_id' => $augmentation->id,
-                    'from_appropriation_id' => $fromAppropriation->id,
-                    'to_appropriation_id' => $transferResult['to_appropriation_id'], // Use the actual TO appropriation ID (new or existing)
-                    'amount' => $detail['amount'],
-                    'particulars' => $detail['particulars'] ?? null
+                    'budget_augmentation_id' =>
+                        $augmentation->id,
+
+                    'from_appropriation_id' =>
+                        $fromAppropriation->id,
+
+                    'to_appropriation_id' =>
+                        $transferResult['to_appropriation_id'],
+
+                    'amount' =>
+                        $amount,
+
+                    'particulars' =>
+                        $detail['particulars'] ?? null,
                 ]);
 
-                // Prepare log detail line with shortened names to avoid truncation
-                $fromName = $this->buildShortAccountName($fromAppropriation->expenseClass, $fromAppropriation->expenseType, $fromAppropriation->expenseItem);
-                
-                // Get the actual TO appropriation for logging (either existing or newly created)
-                $actualToAppropriation = TranAppropriation::find($transferResult['to_appropriation_id']);
-                $toName = $this->buildShortAccountName($actualToAppropriation->expenseClass, $actualToAppropriation->expenseType, $actualToAppropriation->expenseItem);
-                
-                // Create shorter log entry without particulars to save space
-                $logDetails[] = sprintf('%s → %s ₱%s',
-                    $fromName,
-                    $toName,
-                    number_format((float)$detail['amount'], 2)
+                /*
+                |--------------------------------------------------------------------------
+                | LOGGING
+                |--------------------------------------------------------------------------
+                */
+
+                $logDetails[] = sprintf(
+                    'From appropriation #%d → To appropriation #%d ₱%s',
+                    $fromAppropriation->id,
+                    $actualToAppropriation->id,
+                    number_format($amount, 2)
                 );
             }
 
-            // Note: Budget augmentation per budget was adjusted per-detail when crossing budgets.
-            // No aggregate adjustment here to avoid double counting.
-            
+            /*
+            |--------------------------------------------------------------------------
+            | LOG CREATION
+            |--------------------------------------------------------------------------
+            */
 
+            $logMessage = sprintf(
+                '#%s total ₱%s',
+                $refNumber,
+                number_format($totalAmount, 2)
+            );
 
-            // Log creation with shortened message to avoid truncation
-            $logMessage = sprintf('#%s total ₱%s', $refNumber, number_format((float)$totalAmount, 2));
             if (!empty($logDetails)) {
-                // Limit log details to avoid truncation - show only first few transfers
-                $limitedDetails = array_slice($logDetails, 0, 3); // Show max 3 transfers
+
+                $limitedDetails = array_slice($logDetails, 0, 3);
+
                 $logMessage .= ' | Transfers: ' . implode('; ', $limitedDetails);
+
                 if (count($logDetails) > 3) {
-                    $logMessage .= sprintf('; +%d more', count($logDetails) - 3);
+                    $logMessage .= sprintf(
+                        '; +%d more',
+                        count($logDetails) - 3
+                    );
+                }
+
+                // Keep the activity log within the existing logs.details column size.
+                $maxLogDetailsLength = 500;
+
+                if (mb_strlen($logMessage) > $maxLogDetailsLength) {
+                    $logMessage = mb_substr(
+                        $logMessage,
+                        0,
+                        $maxLogDetailsLength - 3
+                    ) . '...';
                 }
             }
-            
+
+            $maxLogDetailsLength = 500;
+
+            if (mb_strlen($logMessage) > $maxLogDetailsLength) {
+                $logMessage = mb_substr(
+                    $logMessage,
+                    0,
+                    $maxLogDetailsLength - 3
+                ) . '...';
+            }
+
             AdminAuthController::logUserAction(
-                $request->user(),
+                $user,
                 'Created Augmentation',
                 $logMessage
             );
 
+            /*
+            |--------------------------------------------------------------------------
+            | RESPONSE
+            |--------------------------------------------------------------------------
+            */
+
             return response()->json([
                 'status' => true,
-                'message' => 'Budget augmentation created successfully',
-                'data' => $augmentation->load('details')
+                'message' =>
+                    'Budget augmentation created successfully',
+                'data' =>
+                    $augmentation->load([
+                        'details.fromAppropriation',
+                        'details.toAppropriation',
+                    ]),
             ], 201);
         });
     }
@@ -506,9 +1249,21 @@ public function index(Request $request)
     public function show($id)
     {
         $augmentation = BudgetAugmentation::with([
-            'budget', 
-            'details.fromAppropriation', 
-            'details.toAppropriation'
+            'budget',
+
+            'details.fromAppropriation.expenseClass',
+            'details.fromAppropriation.expenseType',
+            'details.fromAppropriation.expenseItem',
+            'details.fromAppropriation.expenseSubItem',
+            'details.fromAppropriation.expenseSubType',
+            'details.fromAppropriation.expenseSubSubType',
+
+            'details.toAppropriation.expenseClass',
+            'details.toAppropriation.expenseType',
+            'details.toAppropriation.expenseItem',
+            'details.toAppropriation.expenseSubItem',
+            'details.toAppropriation.expenseSubType',
+            'details.toAppropriation.expenseSubSubType',
         ])->findOrFail($id);
 
         return response()->json([
@@ -533,190 +1288,718 @@ public function index(Request $request)
      */
     public function update(Request $request, $id)
     {
-        $augmentation = BudgetAugmentation::findOrFail($id);
+        $user = $request->user();
 
+        /*
+        |--------------------------------------------------------------------------
+        | FIND AUGMENTATION AND VERIFY BARANGAY
+        |--------------------------------------------------------------------------
+        */
+        $augmentation = BudgetAugmentation::query()
+            ->where('id', $id)
+            ->where('barangay_id', $user->barangay_id)
+            ->firstOrFail();
+
+        /*
+        |--------------------------------------------------------------------------
+        | VALIDATION
+        |--------------------------------------------------------------------------
+        */
         $validator = Validator::make($request->all(), [
             'augmentation_date' => 'required|date',
             'remarks' => 'nullable|string',
+
             'details' => 'required|array|min:1',
-            'details.*.from_appropriation_id' => 'required|exists:tran_appropriations,id',
-            'details.*.to_appropriation_id' => 'required|exists:tran_appropriations,id',
-            'details.*.amount' => 'required|numeric|min:0',
-            'details.*.particulars' => 'nullable|string'
+
+            'details.*.from_appropriation_id' =>
+                'required|exists:tran_appropriations,id',
+
+            'details.*.to_appropriation_id' =>
+                'nullable|exists:tran_appropriations,id',
+
+            'details.*.to_expense_data' =>
+                'nullable|array',
+
+            'details.*.to_expense_data.expense_class_id' =>
+                'nullable|integer|exists:lib_expense_classes,id',
+
+            'details.*.to_expense_data.expense_type_id' =>
+                'nullable|integer|exists:lib_expense_types,id',
+
+            'details.*.to_expense_data.expense_item_id' =>
+                'nullable|integer|exists:lib_expense_items,id',
+
+            'details.*.to_expense_data.expense_sub_item_id' =>
+                'nullable|integer|exists:lib_expense_sub_items,id',
+
+            'details.*.to_expense_data.expense_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_types,id',
+
+            'details.*.to_expense_data.expense_sub_sub_type_id' =>
+                'nullable|integer|exists:lib_expense_sub_sub_types,id',
+
+            'details.*.amount' =>
+                'required|numeric|min:0.01',
+
+            'details.*.particulars' =>
+                'nullable|string',
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'status' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        return DB::transaction(function () use ($request, $augmentation) {
-            // Calculate new total amount
-            $newTotalAmount = collect($request->details)->sum('amount');
-            $oldTotalAmount = $augmentation->total_amount;
+        return DB::transaction(function () use (
+            $request,
+            $augmentation,
+            $user
+        ) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | SAVE OLD VALUES FOR LOGGING
+            |--------------------------------------------------------------------------
+            */
+
+            $oldTotalAmount = (float) $augmentation->total_amount;
             $oldRemarks = $augmentation->remarks ?? '';
 
-            // Find the first appropriation to determine the new budget
-            $firstDetail = $request->details[0];
-            $firstFromAppropriation = TranAppropriation::find($firstDetail['from_appropriation_id']);
+            /*
+            |--------------------------------------------------------------------------
+            | CALCULATE NEW TOTAL
+            |--------------------------------------------------------------------------
+            */
 
-            if (!$firstFromAppropriation) {
-                throw new \Exception('Source appropriation not found with ID: ' . $firstDetail['from_appropriation_id']);
+            $newTotalAmount = collect($request->details)
+                ->sum(function ($detail) {
+                    return (float) $detail['amount'];
+                });
+
+            if ($newTotalAmount <= 0) {
+                throw new \Exception(
+                    'Total augmentation amount must be greater than zero.'
+                );
             }
 
-            // Get the new budget from the first appropriation
-            $newBudget = $firstFromAppropriation->budget;
+            /*
+            |--------------------------------------------------------------------------
+            | SNAPSHOT OLD DETAILS BEFORE REVERSING
+            |--------------------------------------------------------------------------
+            */
 
-            // Update budget augmentation
-            $augmentation->update([
-                'budget_id' => $newBudget->id,
-                'augmentation_date' => $request->augmentation_date,
-                'total_amount' => $newTotalAmount,
-                'remarks' => $request->remarks
-            ]);
+            $oldDetails = $augmentation->details()->get();
 
-            // First, reverse the old transfers by adding back to FROM appropriations and deducting from TO appropriations
-            foreach ($augmentation->details as $oldDetail) {
-                $oldFromAppropriation = TranAppropriation::find($oldDetail->from_appropriation_id);
-                $oldToAppropriation = TranAppropriation::find($oldDetail->to_appropriation_id);
-
-                if ($oldFromAppropriation && $oldToAppropriation) {
-                    // Reverse the old transfer
-                    $oldFromAppropriation->increment('amount', $oldDetail->amount);
-                    $oldToAppropriation->decrement('amount', $oldDetail->amount);
-
-                    // Reverse budget augmentation effects if transfer crossed budgets
-                    if ($oldFromAppropriation->budget_id !== $oldToAppropriation->budget_id) {
-                        $fromBudget = \App\Models\Budget::find($oldFromAppropriation->budget_id);
-                        $toBudget = \App\Models\Budget::find($oldToAppropriation->budget_id);
-                        if ($fromBudget) {
-                            // Money returns to source budget: augmentation increases back
-                            $fromBudget->increment('augmentation', $oldDetail->amount);
-                        }
-                        if ($toBudget) {
-                            // Money removed from destination budget: augmentation decreases
-                            $toBudget->decrement('augmentation', $oldDetail->amount);
-                        }
-                    }
-                }
-            }
-
-            // Snapshot old detail summary for logging
             $oldSummary = [];
-            foreach ($augmentation->details as $oldDetail) {
-                $fromAppr = TranAppropriation::with(['expenseClass','expenseType','expenseItem'])->find($oldDetail->from_appropriation_id);
-                $toAppr = TranAppropriation::with(['expenseClass','expenseType','expenseItem'])->find($oldDetail->to_appropriation_id);
-                $fromName = $this->buildAccountName($fromAppr?->expenseClass, $fromAppr?->expenseType, $fromAppr?->expenseItem);
-                $toName = $this->buildAccountName($toAppr?->expenseClass, $toAppr?->expenseType, $toAppr?->expenseItem);
-                $key = $oldDetail->from_appropriation_id . ':' . $oldDetail->to_appropriation_id;
+
+            foreach ($oldDetails as $oldDetail) {
+
+                $fromAppr = TranAppropriation::with([
+                    'expenseClass',
+                    'expenseType',
+                    'expenseItem',
+                    'expenseSubItem',
+                    'expenseSubType',
+                    'expenseSubSubType',
+                ])->find($oldDetail->from_appropriation_id);
+
+                $toAppr = TranAppropriation::with([
+                    'expenseClass',
+                    'expenseType',
+                    'expenseItem',
+                    'expenseSubItem',
+                    'expenseSubType',
+                    'expenseSubSubType',
+                ])->find($oldDetail->to_appropriation_id);
+
+                $fromName = $this->buildAccountName(
+                    $fromAppr?->expenseClass,
+                    $fromAppr?->expenseType,
+                    $fromAppr?->expenseItem,
+                    $fromAppr?->expenseSubItem,
+                    $fromAppr?->expenseSubType,
+                    $fromAppr?->expenseSubSubType
+                );
+
+                $toName = $this->buildAccountName(
+                    $toAppr?->expenseClass,
+                    $toAppr?->expenseType,
+                    $toAppr?->expenseItem,
+                    $toAppr?->expenseSubItem,
+                    $toAppr?->expenseSubType,
+                    $toAppr?->expenseSubSubType
+                );
+
+                $key =
+                    $oldDetail->from_appropriation_id .
+                    ':' .
+                    $oldDetail->to_appropriation_id;
+
                 $oldSummary[$key] = [
                     'from' => $fromName,
                     'to' => $toName,
-                    'amount' => (float)$oldDetail->amount,
+                    'amount' => (float) $oldDetail->amount,
                 ];
             }
 
-            // Delete old details
+            /*
+            |--------------------------------------------------------------------------
+            | REVERSE OLD TRANSFERS
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($oldDetails as $oldDetail) {
+
+                $oldFromAppropriation = TranAppropriation::query()
+                    ->where('id', $oldDetail->from_appropriation_id)
+                    ->where('barangay_id', $user->barangay_id)
+                    ->where('status', 'committed')
+                    ->lockForUpdate()
+                    ->first();
+
+                $oldToAppropriation = TranAppropriation::query()
+                    ->where('id', $oldDetail->to_appropriation_id)
+                    ->where('barangay_id', $user->barangay_id)
+                    ->where('status', 'committed')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$oldFromAppropriation) {
+                    throw new \Exception(
+                        'Original source appropriation not found. ID: ' .
+                        $oldDetail->from_appropriation_id
+                    );
+                }
+
+                if (!$oldToAppropriation) {
+                    throw new \Exception(
+                        'Original destination appropriation not found. ID: ' .
+                        $oldDetail->to_appropriation_id
+                    );
+                }
+
+                /*
+                | Put the old money back into SOURCE.
+                */
+                $oldFromAppropriation->increment(
+                    'amount',
+                    $oldDetail->amount
+                );
+
+                /*
+                | Remove the old transferred money from DESTINATION.
+                */
+                $oldToAppropriation->decrement(
+                    'amount',
+                    $oldDetail->amount
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | REVERSE CROSS-BUDGET EFFECT
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $oldFromAppropriation->budget_id !==
+                    $oldToAppropriation->budget_id
+                ) {
+
+                    $fromBudget = Budget::find(
+                        $oldFromAppropriation->budget_id
+                    );
+
+                    $toBudget = Budget::find(
+                        $oldToAppropriation->budget_id
+                    );
+
+                    if ($fromBudget) {
+                        $fromBudget->increment(
+                            'augmentation',
+                            $oldDetail->amount
+                        );
+                    }
+
+                    if ($toBudget) {
+                        $toBudget->decrement(
+                            'augmentation',
+                            $oldDetail->amount
+                        );
+                    }
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | DELETE OLD DETAILS
+            |--------------------------------------------------------------------------
+            */
+
             $augmentation->details()->delete();
 
-            // Create new details and perform new transfers
-            $newSummary = [];
-            foreach ($request->details as $detail) {
-                // Find source appropriation (FROM)
-                $fromAppropriation = TranAppropriation::find($detail['from_appropriation_id']);
+            /*
+            |--------------------------------------------------------------------------
+            | PROCESS NEW DETAILS
+            |--------------------------------------------------------------------------
+            */
 
-                // Find destination appropriation (TO)
-                $toAppropriation = TranAppropriation::find($detail['to_appropriation_id']);
+            $newSummary = [];
+
+            foreach ($request->details as $detail) {
+
+                $amount = (float) $detail['amount'];
+
+                if ($amount <= 0) {
+                    throw new \Exception(
+                        'Transfer amount must be greater than zero.'
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | SOURCE APPROPRIATION
+                |--------------------------------------------------------------------------
+                */
+
+                $fromAppropriation = TranAppropriation::query()
+                    ->where('id', $detail['from_appropriation_id'])
+                    ->where('barangay_id', $user->barangay_id)
+                    ->where('status', 'committed')
+                    ->lockForUpdate()
+                    ->first();
 
                 if (!$fromAppropriation) {
-                    throw new \Exception('Source appropriation not found with ID: ' . $detail['from_appropriation_id']);
+                    throw new \Exception(
+                        'Source appropriation not found or is not available. ' .
+                        'ID: ' .
+                        $detail['from_appropriation_id']
+                    );
                 }
+
+                /*
+                |--------------------------------------------------------------------------
+                | DESTINATION APPROPRIATION
+                |--------------------------------------------------------------------------
+                */
+
+                $toAppropriation = null;
+
+                if (
+                    isset($detail['to_appropriation_id']) &&
+                    $detail['to_appropriation_id'] !== null &&
+                    $detail['to_appropriation_id'] !== ''
+                ) {
+
+                    /*
+                    | IMPORTANT:
+                    | Use the EXACT selected appropriation ID.
+                    */
+                    $toAppropriation = TranAppropriation::query()
+                        ->where(
+                            'id',
+                            $detail['to_appropriation_id']
+                        )
+                        ->where(
+                            'barangay_id',
+                            $user->barangay_id
+                        )
+                        ->where('status', 'committed')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (!$toAppropriation) {
+                        throw new \Exception(
+                            'Destination appropriation not found or is not available. ' .
+                            'ID: ' .
+                            $detail['to_appropriation_id']
+                        );
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | SAME SOURCE / DESTINATION CHECK
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $toAppropriation &&
+                    $fromAppropriation->id === $toAppropriation->id
+                ) {
+                    throw new \Exception(
+                        'Source and destination appropriation cannot be the same.'
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | NEW DESTINATION DATA
+                |--------------------------------------------------------------------------
+                */
+
+                $toExpenseData = null;
 
                 if (!$toAppropriation) {
-                    throw new \Exception('Destination appropriation not found with ID: ' . $detail['to_appropriation_id']);
+
+                    if (
+                        !isset($detail['to_expense_data']) ||
+                        !is_array($detail['to_expense_data'])
+                    ) {
+                        throw new \Exception(
+                            'Destination appropriation not found and no destination expense data was provided.'
+                        );
+                    }
+
+                    $toExpenseData =
+                        $detail['to_expense_data'];
                 }
 
-                // Perform the actual money transfer
-                $transferResult = $this->performTransfer($fromAppropriation, $toAppropriation, $detail['amount'], null, $request->user()->id);
+                /*
+                |--------------------------------------------------------------------------
+                | PERFORM TRANSFER
+                |--------------------------------------------------------------------------
+                |
+                | IMPORTANT:
+                | performTransfer() is called EXACTLY ONCE.
+                |
+                */
 
-                // Adjust budgets if transfer crosses budgets
-                if ($fromAppropriation->budget_id !== $toAppropriation->budget_id) {
-                    $fromBudget = \App\Models\Budget::find($fromAppropriation->budget_id);
-                    $toBudget = \App\Models\Budget::find($toAppropriation->budget_id);
+                $transferResult = $this->performTransfer(
+                    $fromAppropriation,
+                    $toAppropriation,
+                    $amount,
+                    $toExpenseData,
+                    $user->id
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | GET ACTUAL DESTINATION
+                |--------------------------------------------------------------------------
+                |
+                | This is critical.
+                |
+                | If toAppropriation was null, performTransfer()
+                | may have created a new appropriation.
+                |
+                */
+
+                $actualToAppropriation =
+                    TranAppropriation::query()
+                        ->where(
+                            'id',
+                            $transferResult['to_appropriation_id']
+                        )
+                        ->where(
+                            'barangay_id',
+                            $user->barangay_id
+                        )
+                        ->where('status', 'committed')
+                        ->lockForUpdate()
+                        ->first();
+
+                if (!$actualToAppropriation) {
+                    throw new \Exception(
+                        'Destination appropriation could not be resolved after transfer. ' .
+                        'ID: ' .
+                        $transferResult['to_appropriation_id']
+                    );
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | CROSS-BUDGET ADJUSTMENT
+                |--------------------------------------------------------------------------
+                */
+
+                if (
+                    $fromAppropriation->budget_id !==
+                    $actualToAppropriation->budget_id
+                ) {
+
+                    $fromBudget = Budget::find(
+                        $fromAppropriation->budget_id
+                    );
+
+                    $toBudget = Budget::find(
+                        $actualToAppropriation->budget_id
+                    );
+
                     if ($fromBudget) {
-                        $fromBudget->decrement('augmentation', $detail['amount']);
+                        $fromBudget->decrement(
+                            'augmentation',
+                            $amount
+                        );
                     }
+
                     if ($toBudget) {
-                        $toBudget->increment('augmentation', $detail['amount']);
+                        $toBudget->increment(
+                            'augmentation',
+                            $amount
+                        );
                     }
                 }
 
-                // Create augmentation detail record
+                /*
+                |--------------------------------------------------------------------------
+                | CREATE NEW DETAIL
+                |--------------------------------------------------------------------------
+                */
+
                 BudgetAugmentationDetail::create([
-                    'budget_augmentation_id' => $augmentation->id,
-                    'from_appropriation_id' => $fromAppropriation->id,
-                    'to_appropriation_id' => $toAppropriation->id,
-                    'amount' => $detail['amount'],
-                    'particulars' => $detail['particulars'] ?? null
+                    'budget_augmentation_id' =>
+                        $augmentation->id,
+
+                    'from_appropriation_id' =>
+                        $fromAppropriation->id,
+
+                    'to_appropriation_id' =>
+                        $actualToAppropriation->id,
+
+                    'amount' =>
+                        $amount,
+
+                    'particulars' =>
+                        $detail['particulars'] ?? null,
                 ]);
 
-                // For logging build new summary
-                $fromName = $this->buildAccountName($fromAppropriation->expenseClass, $fromAppropriation->expenseType, $fromAppropriation->expenseItem);
-                $toName = $this->buildAccountName($toAppropriation->expenseClass, $toAppropriation->expenseType, $toAppropriation->expenseItem);
-                $key = $fromAppropriation->id . ':' . $toAppropriation->id;
+                /*
+                |--------------------------------------------------------------------------
+                | LOGGING
+                |--------------------------------------------------------------------------
+                */
+
+                $fromName = $this->buildAccountName(
+                    $fromAppropriation->expenseClass,
+                    $fromAppropriation->expenseType,
+                    $fromAppropriation->expenseItem,
+                    $fromAppropriation->expenseSubItem,
+                    $fromAppropriation->expenseSubType,
+                    $fromAppropriation->expenseSubSubType
+                );
+
+                $toName = $this->buildAccountName(
+                    $actualToAppropriation->expenseClass,
+                    $actualToAppropriation->expenseType,
+                    $actualToAppropriation->expenseItem,
+                    $actualToAppropriation->expenseSubItem,
+                    $actualToAppropriation->expenseSubType,
+                    $actualToAppropriation->expenseSubSubType
+                );
+
+                $key =
+                    $fromAppropriation->id .
+                    ':' .
+                    $actualToAppropriation->id;
+
                 $newSummary[$key] = [
                     'from' => $fromName,
                     'to' => $toName,
-                    'amount' => (float)$detail['amount'],
+                    'amount' => $amount,
                 ];
             }
 
-            // Budget augmentation values were adjusted per-detail above to reflect cross-budget transfers.
+            /*
+            |--------------------------------------------------------------------------
+            | UPDATE AUGMENTATION HEADER
+            |--------------------------------------------------------------------------
+            */
 
-            // Build unified log for edit
+            $firstNewDetail = $request->details[0];
+
+            $firstNewFrom = TranAppropriation::find(
+                $firstNewDetail['from_appropriation_id']
+            );
+
+            if (!$firstNewFrom || !$firstNewFrom->budget) {
+                throw new \Exception(
+                    'Unable to determine budget from the new source appropriation.'
+                );
+            }
+
+            $augmentation->update([
+                'budget_id' =>
+                    $firstNewFrom->budget_id,
+
+                'augmentation_date' =>
+                    $request->augmentation_date,
+
+                'total_amount' =>
+                    $newTotalAmount,
+
+                'remarks' =>
+                    $request->remarks,
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | BUILD CHANGE LOG
+            |--------------------------------------------------------------------------
+            */
+
             $topChanges = [];
             $amountChange = null;
-            if (($oldRemarks ?? '') !== ($request->remarks ?? '')) { $topChanges[] = sprintf('Remarks "%s" → "%s"', $oldRemarks, $request->remarks ?? ''); }
-            if ((float)$oldTotalAmount !== (float)$newTotalAmount) { $amountChange = sprintf('Overall Amount ₱%s → ₱%s', number_format((float)$oldTotalAmount, 2), number_format((float)$newTotalAmount, 2)); }
+
+            if (
+                ($oldRemarks ?? '') !==
+                ($request->remarks ?? '')
+            ) {
+                $topChanges[] = sprintf(
+                    'Remarks "%s" → "%s"',
+                    $oldRemarks,
+                    $request->remarks ?? ''
+                );
+            }
+
+            if (
+                (float) $oldTotalAmount !==
+                (float) $newTotalAmount
+            ) {
+                $amountChange = sprintf(
+                    'Overall Amount ₱%s → ₱%s',
+                    number_format(
+                        $oldTotalAmount,
+                        2
+                    ),
+                    number_format(
+                        $newTotalAmount,
+                        2
+                    )
+                );
+            }
 
             $added = [];
             $edited = [];
             $deleted = [];
-            $allKeys = array_unique(array_merge(array_keys($oldSummary), array_keys($newSummary)));
+
+            $allKeys = array_unique(
+                array_merge(
+                    array_keys($oldSummary),
+                    array_keys($newSummary)
+                )
+            );
+
             foreach ($allKeys as $key) {
+
                 $old = $oldSummary[$key] ?? null;
                 $new = $newSummary[$key] ?? null;
+
                 if ($old && !$new) {
-                    $deleted[] = sprintf('%s → %s ₱%s', $old['from'], $old['to'], number_format($old['amount'], 2));
+
+                    $deleted[] = sprintf(
+                        '%s → %s ₱%s',
+                        $old['from'],
+                        $old['to'],
+                        number_format(
+                            $old['amount'],
+                            2
+                        )
+                    );
+
                 } elseif (!$old && $new) {
-                    $added[] = sprintf('%s → %s ₱%s', $new['from'], $new['to'], number_format($new['amount'], 2));
-                } elseif ($old && $new && $old['amount'] !== $new['amount']) {
-                    $edited[] = sprintf('%s → %s Amount ₱%s → ₱%s', $new['from'], $new['to'], number_format($old['amount'], 2), number_format($new['amount'], 2));
+
+                    $added[] = sprintf(
+                        '%s → %s ₱%s',
+                        $new['from'],
+                        $new['to'],
+                        number_format(
+                            $new['amount'],
+                            2
+                        )
+                    );
+
+                } elseif (
+                    $old &&
+                    $new &&
+                    (float) $old['amount'] !==
+                    (float) $new['amount']
+                ) {
+
+                    $edited[] = sprintf(
+                        '%s → %s Amount ₱%s → ₱%s',
+                        $new['from'],
+                        $new['to'],
+                        number_format(
+                            $old['amount'],
+                            2
+                        ),
+                        number_format(
+                            $new['amount'],
+                            2
+                        )
+                    );
                 }
             }
 
             $parts = [];
-            if (!empty($topChanges)) { $parts[] = implode(', ', $topChanges); }
-            if (!empty($added)) { $parts[] = 'Added: ' . implode('; ', $added); }
-            if (!empty($edited)) { $parts[] = 'Edited: ' . implode('; ', $edited); }
-            if (!empty($deleted)) { $parts[] = 'Deleted: ' . implode('; ', $deleted); }
-            if (!empty($amountChange)) { $parts[] = $amountChange; }
 
-            if (!empty($parts)) {
-                AdminAuthController::logUserAction(
-                    $request->user(),
-                    'Edited Augmentation',
-                    sprintf('#%s | %s', $augmentation->ref_number, implode(' | ', $parts))
+            if (!empty($topChanges)) {
+                $parts[] = implode(
+                    ', ',
+                    $topChanges
                 );
             }
 
+            if (!empty($added)) {
+                $parts[] =
+                    'Added: ' .
+                    implode('; ', $added);
+            }
+
+            if (!empty($edited)) {
+                $parts[] =
+                    'Edited: ' .
+                    implode('; ', $edited);
+            }
+
+            if (!empty($deleted)) {
+                $parts[] =
+                    'Deleted: ' .
+                    implode('; ', $deleted);
+            }
+
+            if ($amountChange) {
+                $parts[] = $amountChange;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | WRITE AUDIT LOG
+            |--------------------------------------------------------------------------
+            */
+
+            if (!empty($parts)) {
+
+                AdminAuthController::logUserAction(
+                    $user,
+                    'Edited Augmentation',
+                    sprintf(
+                        '#%s | %s',
+                        $augmentation->ref_number,
+                        implode(' | ', $parts)
+                    )
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | RESPONSE
+            |--------------------------------------------------------------------------
+            */
+
             return response()->json([
                 'status' => true,
-                'message' => 'Budget augmentation updated successfully',
-                'data' => $augmentation->load('details')
+                'message' =>
+                    'Budget augmentation updated successfully',
+
+                'data' =>
+                    $augmentation->load([
+                        'details.fromAppropriation',
+                        'details.toAppropriation',
+                    ]),
             ]);
         });
     }
@@ -771,4 +2054,4 @@ public function index(Request $request)
             ]);
         });
     }
-} 
+}

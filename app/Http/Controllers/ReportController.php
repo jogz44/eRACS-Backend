@@ -29,7 +29,16 @@ class ReportController extends Controller
             'request_params' => $data
         ]);
 
-        $q = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem', 'expenseSubItem', 'details','details.disbursement'])
+        $q = TranAppropriation::with([
+            'expenseClass',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+            'details',
+            'details.disbursement',
+        ])
             ->when($barangayId, fn($qq) => $qq->where('barangay_id', $barangayId))
             ->whereHas('details.disbursement', function($query) use ($data) {
                 $query->whereDate('date', '>=', $data['from'])
@@ -86,9 +95,11 @@ class ReportController extends Controller
                     $disb = $detail->disbursement;
                     return [
                         'accountTitle' => implode(' - ', array_filter([
-                            $o->expenseType->name ?? null,
-                            $o->expenseItem->name ?? null,
-                            $o->expenseSubItem->name ?? null,
+                            $o->expenseType?->name,
+                            $o->expenseItem?->name,
+                            $o->expenseSubItem?->name,
+                            $o->expenseSubType?->name,
+                            $o->expenseSubSubType?->name,
                         ])),
                         'appropriation' => (float) $o->amount,
                         'particular' => $detail?->particulars,
@@ -244,7 +255,15 @@ class ReportController extends Controller
         // Determine barangay scope: explicit param (admin) or authenticated user's barangay
         $barangayId = $data['barangay_id'] ?? optional($request->user())->barangay_id;
 
-        $q = TranAppropriation::with(['expenseClass', 'expenseType', 'expenseItem', 'expenseSubItem','details.disbursement'])
+        $q = TranAppropriation::with([
+            'expenseClass',
+            'expenseType',
+            'expenseItem',
+            'expenseSubItem',
+            'expenseSubType',
+            'expenseSubSubType',
+            'details.disbursement',
+        ])
             ->when($barangayId, fn($qq) => $qq->where('barangay_id', $barangayId))
             ->where(function ($query) use ($data) {
                 $query->whereHas('details.disbursement', function($q2) use ($data) {
@@ -265,154 +284,429 @@ class ReportController extends Controller
             });
 
             return [
+                // EXPENSE CLASS
                 'expense_class_id' => $o->expense_class_id,
                 'expense_class_name' => $o->expenseClass?->name,
                 'expense_class_order' => $o->expenseClass?->order,
+
+                // EXPENSE TYPE
                 'expense_type_id' => $o->expense_type_id,
                 'expense_type_name' => $o->expenseType?->name,
+                'expense_type_order' => $o->expenseType?->order,
+
+                // EXPENSE ITEM
                 'expense_item_id' => $o->expense_item_id,
                 'expense_item_name' => $o->expenseItem?->name,
+                'expense_item_order' => $o->expenseItem?->order,
+
+                // EXPENSE SUB ITEM
                 'expense_sub_item_id' => $o->expense_sub_item_id,
                 'expense_sub_item_name' => $o->expenseSubItem?->name,
-                'appropriation' => (float)$o->amount,
+                'expense_sub_item_order' => $o->expenseSubItem?->order,
+
+                // EXPENSE SUB TYPE
+                'expense_sub_type_id' => $o->expense_sub_type_id,
+                'expense_sub_type_name' => $o->expenseSubType?->name,
+                'expense_sub_type_order' => $o->expenseSubType?->order,
+
+                // EXPENSE SUB SUB TYPE
+                'expense_sub_sub_type_id' => $o->expense_sub_sub_type_id,
+                'expense_sub_sub_type_name' => $o->expenseSubSubType?->name,
+                'expense_sub_sub_type_order' => $o->expenseSubSubType?->order,
+
+                // AMOUNTS
+                'appropriation' => (float) $o->amount,
                 'obligation' => (float) $filteredDetails->sum('amount'),
                 'balance' => (float) $o->amount - (float) $filteredDetails->sum('amount'),
             ];
         });
 
-        // Build hierarchical structure similar to ViewCommitDialog.vue
-        $hierarchicalData = [];
+        \Log::info('SACB SIX LEVEL DATA', [
+            'rows' => $rows->map(function ($row) {
+                return [
+                    'expense_class_id' => $row['expense_class_id'],
+                    'expense_type_id' => $row['expense_type_id'],
+                    'expense_item_id' => $row['expense_item_id'],
+                    'expense_sub_item_id' => $row['expense_sub_item_id'],
+                    'expense_sub_type_id' => $row['expense_sub_type_id'],
+                    'expense_sub_sub_type_id' => $row['expense_sub_sub_type_id'],
+
+                    'expense_class_name' => $row['expense_class_name'],
+                    'expense_type_name' => $row['expense_type_name'],
+                    'expense_item_name' => $row['expense_item_name'],
+                    'expense_sub_item_name' => $row['expense_sub_item_name'],
+                    'expense_sub_type_name' => $row['expense_sub_type_name'],
+                    'expense_sub_sub_type_name' => $row['expense_sub_sub_type_name'],
+                ];
+            })->values()->toArray(),
+        ]);
+
+        // Build six-level hierarchical structure:
+        //
+        // Expense Class
+        //   └── Expense Type
+        //       └── Expense Item
+        //           └── Expense Sub Item
+        //               └── Expense Sub Type
+        //                   └── Expense Sub Sub Type
+
         $classMap = [];
 
-        // Group by expense class first
+        //BUILD HIERARCHY
         $rows->each(function ($row) use (&$classMap) {
-            $classId = $row['expense_class_id'];
-            $className = $row['expense_class_name'];
-            $classOrder = $row['expense_class_order'];
 
+            $classId = $row['expense_class_id'] ?? null;
+
+            if (!$classId) {
+                return;
+            }
+
+            //EXPENSE CLASS
             if (!isset($classMap[$classId])) {
                 $classMap[$classId] = [
                     'id' => $classId,
-                    'name' => $className,
-                    'order' => $classOrder,
+                    'name' => $row['expense_class_name'],
+                    'order' => $row['expense_class_order'] ?? 0,
+
                     'types' => [],
+
                     'total_appropriation' => 0,
                     'total_obligation' => 0,
                     'total_balance' => 0,
                 ];
             }
 
-            // Add to class totals
-            $classMap[$classId]['total_appropriation'] += $row['appropriation'];
-            $classMap[$classId]['total_obligation'] += $row['obligation'];
-            $classMap[$classId]['total_balance'] += $row['balance'];
+            $class =& $classMap[$classId];
 
-            // Handle type level
-            $typeId = $row['expense_type_id'];
-            $typeName = $row['expense_type_name'];
+            $class['total_appropriation'] += $row['appropriation'];
+            $class['total_obligation'] += $row['obligation'];
+            $class['total_balance'] += $row['balance'];
 
-            if ($typeId && !isset($classMap[$classId]['types'][$typeId])) {
-                $classMap[$classId]['types'][$typeId] = [
+            //EXPENSE TYPE
+            $typeId = $row['expense_type_id'] ?? null;
+
+            if (!$typeId) {
+                unset($class);
+                return;
+            }
+
+            if (!isset($class['types'][$typeId])) {
+                $class['types'][$typeId] = [
                     'id' => $typeId,
-                    'name' => $typeName,
+                    'name' => $row['expense_type_name'],
+                    'order' => $row['expense_type_order'] ?? 0,
+
                     'items' => [],
+
                     'total_appropriation' => 0,
                     'total_obligation' => 0,
                     'total_balance' => 0,
                 ];
             }
 
-            if ($typeId) {
-                // Add to type totals
-                $classMap[$classId]['types'][$typeId]['total_appropriation'] += $row['appropriation'];
-                $classMap[$classId]['types'][$typeId]['total_obligation'] += $row['obligation'];
-                $classMap[$classId]['types'][$typeId]['total_balance'] += $row['balance'];
+            $type =& $class['types'][$typeId];
 
-                // Handle item level
-                $itemId = $row['expense_item_id'];
-                $itemName = $row['expense_item_name'];
+            $type['total_appropriation'] += $row['appropriation'];
+            $type['total_obligation'] += $row['obligation'];
+            $type['total_balance'] += $row['balance'];
 
-                if ($itemId && !isset($classMap[$classId]['types'][$typeId]['items'][$itemId])) {
-                    $classMap[$classId]['types'][$typeId]['items'][$itemId] = [
-                        'id' => $itemId,
-                        'name' => $itemName,
-                        'sub_items' => [],
-                        'total_appropriation' => 0,
-                        'total_obligation' => 0,
-                        'total_balance' => 0,
-                    ];
-                }
+            //EXPENSE ITEM
+            $itemId = $row['expense_item_id'] ?? null;
 
-                if ($itemId) {
-                    // Add to item totals
-                    $classMap[$classId]['types'][$typeId]['items'][$itemId]['total_appropriation'] += $row['appropriation'];
-                    $classMap[$classId]['types'][$typeId]['items'][$itemId]['total_obligation'] += $row['obligation'];
-                    $classMap[$classId]['types'][$typeId]['items'][$itemId]['total_balance'] += $row['balance'];
-
-                    // Handle sub-item level
-                    $subItemId = $row['expense_sub_item_id'];
-                    $subItemName = $row['expense_sub_item_name'];
-
-                    if ($subItemId) {
-                        $classMap[$classId]['types'][$typeId]['items'][$itemId]['sub_items'][$subItemId] = [
-                            'id' => $subItemId,
-                            'name' => $subItemName,
-                            'appropriation' => $row['appropriation'],
-                            'obligation' => $row['obligation'],
-                            'balance' => $row['balance'],
-                        ];
-                    }
-                }
+            if (!$itemId) {
+                unset($type, $class);
+                return;
             }
+
+            if (!isset($type['items'][$itemId])) {
+                $type['items'][$itemId] = [
+                    'id' => $itemId,
+                    'name' => $row['expense_item_name'],
+                    'order' => $row['expense_item_order'] ?? 0,
+
+                    'sub_items' => [],
+
+                    'total_appropriation' => 0,
+                    'total_obligation' => 0,
+                    'total_balance' => 0,
+                ];
+            }
+
+            $item =& $type['items'][$itemId];
+
+            $item['total_appropriation'] += $row['appropriation'];
+            $item['total_obligation'] += $row['obligation'];
+            $item['total_balance'] += $row['balance'];
+
+            //EXPENSE SUB ITEM
+            $subItemId = $row['expense_sub_item_id'] ?? null;
+
+            if (!$subItemId) {
+                unset($item, $type, $class);
+                return;
+            }
+
+            if (!isset($item['sub_items'][$subItemId])) {
+                $item['sub_items'][$subItemId] = [
+                    'id' => $subItemId,
+                    'name' => $row['expense_sub_item_name'],
+                    'order' => $row['expense_sub_item_order'] ?? 0,
+
+                    'sub_types' => [],
+
+                    'total_appropriation' => 0,
+                    'total_obligation' => 0,
+                    'total_balance' => 0,
+
+                    // Leaf totals when this Sub Item has no Sub Type
+                    'leaf_appropriation' => 0,
+                    'leaf_obligation' => 0,
+                    'leaf_balance' => 0,
+                ];
+            }
+
+            $subItem =& $item['sub_items'][$subItemId];
+
+            $subItem['total_appropriation'] += $row['appropriation'];
+            $subItem['total_obligation'] += $row['obligation'];
+            $subItem['total_balance'] += $row['balance'];
+
+            //EXPENSE SUB TYPE
+            $subTypeId = $row['expense_sub_type_id'] ?? null;
+
+            if (!$subTypeId) {
+
+                // If this sub-item has no lower hierarchy,
+                // it becomes the leaf.
+                $subItem['leaf_appropriation'] +=
+                    $row['appropriation'];
+
+                $subItem['leaf_obligation'] +=
+                    $row['obligation'];
+
+                $subItem['leaf_balance'] +=
+                    $row['balance'];
+
+                unset($subItem, $item, $type, $class);
+                return;
+            }
+
+            if (!isset($subItem['sub_types'][$subTypeId])) {
+                $subItem['sub_types'][$subTypeId] = [
+                    'id' => $subTypeId,
+                    'name' => $row['expense_sub_type_name'],
+                    'order' => $row['expense_sub_type_order'] ?? 0,
+
+                    'sub_sub_types' => [],
+
+                    'total_appropriation' => 0,
+                    'total_obligation' => 0,
+                    'total_balance' => 0,
+
+                    // Leaf totals when this Sub Type has no Sub Sub Type
+                    'leaf_appropriation' => 0,
+                    'leaf_obligation' => 0,
+                    'leaf_balance' => 0,
+                ];
+            }
+
+            $subType =& $subItem['sub_types'][$subTypeId];
+
+            $subType['total_appropriation'] += $row['appropriation'];
+            $subType['total_obligation'] += $row['obligation'];
+            $subType['total_balance'] += $row['balance'];
+
+            //EXPENSE SUB SUB TYPE
+            $subSubTypeId = $row['expense_sub_sub_type_id'] ?? null;
+
+            if (!$subSubTypeId) {
+
+                // Sub-type is the leaf.
+                $subType['leaf_appropriation'] +=
+                    $row['appropriation'];
+
+                $subType['leaf_obligation'] +=
+                    $row['obligation'];
+
+                $subType['leaf_balance'] +=
+                    $row['balance'];
+
+                unset($subType, $subItem, $item, $type, $class);
+                return;
+            }
+
+            if (!isset($subType['sub_sub_types'][$subSubTypeId])) {
+                $subType['sub_sub_types'][$subSubTypeId] = [
+                    'id' => $subSubTypeId,
+                    'name' => $row['expense_sub_sub_type_name'],
+                    'order' => $row['expense_sub_sub_type_order'] ?? 0,
+
+                    'appropriation' => 0,
+                    'obligation' => 0,
+                    'balance' => 0,
+                ];
+            }
+
+            //SUB SUB TYPE IS THE LEAF
+            $subSubType =& $subType['sub_sub_types'][$subSubTypeId];
+
+            $subSubType['appropriation'] +=
+                $row['appropriation'];
+
+            $subSubType['obligation'] +=
+                $row['obligation'];
+
+            $subSubType['balance'] +=
+                $row['balance'];
+
+            unset(
+                $subSubType,
+                $subType,
+                $subItem,
+                $item,
+                $type,
+                $class
+            );
         });
 
-        // Convert to hierarchical structure for frontend
+        //CONVERT HIERARCHY TO REPORT ROWS
         $hierarchicalRows = [];
+
         $classCounter = 1;
 
-        foreach ($classMap as $classId => $class) {
-            // Add expense class header with total amounts from all children
+        foreach ($classMap as $class) {
+
+            //CLASS
             $hierarchicalRows[] = [
                 'isSection' => true,
                 'ppa' => $classCounter . '. ' . $class['name'],
-                'appropriation' => $class['total_appropriation'],  // Always show class totals
-                'obligation' => $class['total_obligation'],
-                'balance' => $class['total_balance'],
+                'appropriation' => round($class['total_appropriation'], 2),
+                'obligation' => round($class['total_obligation'], 2),
+                'balance' => round($class['total_balance'], 2),
             ];
 
-            // Add expense types
-            foreach ($class['types'] as $typeId => $type) {
-                // Only show type totals if it has no items
+            //TYPES
+            foreach ($class['types'] as $type) {
+
                 $hasItems = !empty($type['items']);
+
                 $hierarchicalRows[] = [
                     'isType' => true,
                     'ppa' => $type['name'],
-                    'appropriation' => $hasItems ? null : $type['total_appropriation'],
-                    'obligation' => $hasItems ? null : $type['total_obligation'],
-                    'balance' => $hasItems ? null : $type['total_balance'],
+                    'appropriation' => $hasItems
+                        ? null
+                        : round($type['total_appropriation'], 2),
+                    'obligation' => $hasItems
+                        ? null
+                        : round($type['total_obligation'], 2),
+                    'balance' => $hasItems
+                        ? null
+                        : round($type['total_balance'], 2),
                 ];
 
-                // Add expense items
-                foreach ($type['items'] as $itemId => $item) {
-                    // Only show item totals if it has no sub-items
+                //ITEMS
+                foreach ($type['items'] as $item) {
+
                     $hasSubItems = !empty($item['sub_items']);
+
                     $hierarchicalRows[] = [
                         'isItem' => true,
                         'ppa' => $item['name'],
-                        'appropriation' => $hasSubItems ? null : $item['total_appropriation'],
-                        'obligation' => $hasSubItems ? null : $item['total_obligation'],
-                        'balance' => $hasSubItems ? null : $item['total_balance'],
+                        'appropriation' => $hasSubItems
+                            ? null
+                            : round($item['total_appropriation'], 2),
+                        'obligation' => $hasSubItems
+                            ? null
+                            : round($item['total_obligation'], 2),
+                        'balance' => $hasSubItems
+                            ? null
+                            : round($item['total_balance'], 2),
                     ];
 
-                    // Add sub-items if they exist (always show amounts for sub-items as they are leaves)
-                    foreach ($item['sub_items'] as $subItemId => $subItem) {
+                    //SUB ITEMS
+                    foreach ($item['sub_items'] as $subItem) {
+
+                        $hasSubTypes = !empty($subItem['sub_types']);
+
                         $hierarchicalRows[] = [
                             'isSubItem' => true,
                             'ppa' => $subItem['name'],
-                            'appropriation' => $subItem['appropriation'],
-                            'obligation' => $subItem['obligation'],
-                            'balance' => $subItem['balance'],
+
+                            'appropriation' => $hasSubTypes
+                                ? null
+                                : round(
+                                    $subItem['leaf_appropriation'] ?? 0,
+                                    2
+                                ),
+
+                            'obligation' => $hasSubTypes
+                                ? null
+                                : round(
+                                    $subItem['leaf_obligation'] ?? 0,
+                                    2
+                                ),
+
+                            'balance' => $hasSubTypes
+                                ? null
+                                : round(
+                                    $subItem['leaf_balance'] ?? 0,
+                                    2
+                                ),
                         ];
+
+                        //SUB TYPES
+                        foreach ($subItem['sub_types'] as $subType) {
+
+                            $hasSubSubTypes =
+                                !empty($subType['sub_sub_types']);
+
+                            $hierarchicalRows[] = [
+                                'isSubType' => true,
+                                'ppa' => $subType['name'],
+
+                                'appropriation' => $hasSubSubTypes
+                                    ? null
+                                    : round($subType['leaf_appropriation'] ?? 0, 2),
+
+                                'obligation' => $hasSubSubTypes
+                                    ? null
+                                    : round($subType['leaf_obligation'] ?? 0, 2),
+
+                                'balance' => $hasSubSubTypes
+                                    ? null
+                                    : round($subType['leaf_balance'] ?? 0, 2),
+                            ];
+
+                            //SUB SUB TYPES
+                            foreach (
+                                $subType['sub_sub_types']
+                                as $subSubType
+                            ) {
+
+                                $hierarchicalRows[] = [
+                                    'isSubSubType' => true,
+                                    'ppa' => $subSubType['name'],
+
+                                    'appropriation' =>
+                                        round(
+                                            $subSubType['appropriation'],
+                                            2
+                                        ),
+
+                                    'obligation' =>
+                                        round(
+                                            $subSubType['obligation'],
+                                            2
+                                        ),
+
+                                    'balance' =>
+                                        round(
+                                            $subSubType['balance'],
+                                            2
+                                        ),
+                                ];
+                            }
+                        }
                     }
                 }
             }
