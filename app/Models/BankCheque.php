@@ -18,7 +18,7 @@ class BankCheque extends Model
 
         'amount',
 
-        'bank_status',
+        // 'bank_status',
 
     ];
 

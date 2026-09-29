@@ -153,6 +153,9 @@ class ContinuingDisbursementController extends Controller
     // POST /api/barangay/continuing-disbursements
     public function store(Request $request)
     {
+        // Get authenticated user first.
+        $user = $request->user();
+
         \Log::info('Continuing Disbursement Store Request:', [
             'all_data' => $request->all(),
             'expenses' => $request->input('expenses', []),
@@ -178,7 +181,6 @@ class ContinuingDisbursementController extends Controller
                 // Deductions
                 'deductions' => 'nullable|array',
                 'deductions.*.deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
-
                 'deductions.*.gross_vat_inc' => 'required|numeric',
                 'deductions.*.gross_vat_exc' => 'nullable|numeric',
                 'deductions.*.deduction_amount' => 'required|numeric',
@@ -211,51 +213,70 @@ class ContinuingDisbursementController extends Controller
 
             // Create main disbursement
             $disbursement = ContDisbursement::create([
-                'barangay_id' => $request->user()->barangay_id,
+                'barangay_id' => $user->barangay_id,
                 'date' => $validated['date'],
                 'dv_number' => $validated['dvNumber'],
                 'payee' => $validated['payee'],
                 'payee2' => $validated['payee2'] ?? null,
                 'dv_amount' => $validated['amount'],
-
                 'bank_status' => $validated['bank_status'],
-
                 'status' => 'Unliquidated',
-                'user_id' => $request->user()->id,
+                'user_id' => $user->id,
             ]);
 
-            //expenses
+            // =========================================================
+            // EXPENSES
+            // =========================================================
             foreach ($validated['expenses'] as $expense) {
 
-                $contAccount = ContApproAccounts::where('id', $expense['accountId'])
-                    ->where('barangay_id', $request->user()->barangay_id)
+                $contApproAccount = ContApproAccounts::with([
+                    'continuingAppropriation',
+
+                    'transactionAppropriation.expenseClass',
+                    'transactionAppropriation.expenseType',
+                    'transactionAppropriation.expenseItem',
+                    'transactionAppropriation.expenseSubItem',
+                    'transactionAppropriation.expenseSubType',
+                    'transactionAppropriation.expenseSubSubType',
+                ])
+                    ->where('id', $expense['accountId'])
+
+                    // cont_appro_accounts does NOT have barangay_id.
+                    // Check the barangay through the related continuing appropriation.
+                    ->whereHas('continuingAppropriation', function ($query) use ($user) {
+                        $query->where('barangay_id', $user->barangay_id)
+                            ->where('status', 'committed');
+                    })
                     ->first();
 
-                if (!$contAccount) {
+                if (!$contApproAccount) {
                     throw new \Exception(
-                        'Continuing appropriation account not found or does not belong to this barangay.'
+                        'Continuing appropriation account not found or does not belong to this barangay. ' .
+                        'Account ID: ' . $expense['accountId']
                     );
                 }
 
-                if ($contAccount->current_amount < $expense['amount']) {
+                if ($contApproAccount->current_amount < $expense['amount']) {
                     throw new \Exception(
                         'Insufficient continuing appropriation balance for account ID: ' .
-                        $contAccount->id
+                        $contApproAccount->id
                     );
                 }
 
                 ContTranExpenseDetail::create([
                     'cont_disbursement_id' => $disbursement->id,
-                    'cont_appro_account_id' => $contAccount->id,
+                    'cont_appro_account_id' => $contApproAccount->id,
                     'particulars' => $expense['particulars'],
                     'amount' => $expense['amount'],
                 ]);
 
-                $contAccount->current_amount -= $expense['amount'];
-                $contAccount->save();
+                $contApproAccount->current_amount -= $expense['amount'];
+                $contApproAccount->save();
             }
 
-            //Deductions
+            // =========================================================
+            // DEDUCTIONS
+            // =========================================================
             foreach ($validated['deductions'] ?? [] as $deduction) {
 
                 $deductionCodeId = $deduction['deduction_code_id'] ?? null;
@@ -265,33 +286,33 @@ class ContinuingDisbursementController extends Controller
                     : null;
 
                 ContDeduction::create([
-
                     'cont_disbursement_id' => $disbursement->id,
 
                     'deduction_code_id' => $libDeduction?->id,
 
                     'deduction_type' => $libDeduction?->deduction_type,
-                    'tax_type'       => $libDeduction?->tax_type,
-                    'code'           => $libDeduction?->code,
-                    'description'    => $libDeduction?->label,
-                    'divisor'        => $libDeduction?->divisor,
-                    'vat_percent'    => $libDeduction?->vat_percent,
-                    'ewt_percent'    => $libDeduction?->ewt_percent,
+                    'tax_type' => $libDeduction?->tax_type,
+                    'code' => $libDeduction?->code,
+                    'description' => $libDeduction?->label,
+                    'divisor' => $libDeduction?->divisor,
+                    'vat_percent' => $libDeduction?->vat_percent,
+                    'ewt_percent' => $libDeduction?->ewt_percent,
 
-                    'gross_vat_inc'  => $deduction['gross_vat_inc'],
-                    'gross_vat_exc'  => $deduction['gross_vat_exc'] ?? null,
+                    'gross_vat_inc' => $deduction['gross_vat_inc'],
+                    'gross_vat_exc' => $deduction['gross_vat_exc'] ?? null,
 
                     'deduction_amount' => $deduction['deduction_amount'],
-                    'net_amount'       => $deduction['net_amount'],
+                    'net_amount' => $deduction['net_amount'],
                 ]);
             }
 
-            //Multiple Bank Cheques
+            // =========================================================
+            // MULTIPLE BANK CHEQUES
+            // =========================================================
             foreach ($validated['bank_cheques'] ?? [] as $cheque) {
 
                 ContBankCheque::create([
                     'cont_disbursement_id' => $disbursement->id,
-
                     'bank_id' => $cheque['bank_id'],
                     'cheque_number' => $cheque['cheque_number'],
                     'cheque_date' => $cheque['cheque_date'],
@@ -314,7 +335,7 @@ class ContinuingDisbursementController extends Controller
             DB::commit();
 
             AdminAuthController::logUserAction(
-                $request->user(),
+                $user,
                 'Created Continuing Disbursement',
                 "Created continuing disbursement DV-{$disbursement->dv_number} for {$disbursement->payee}"
             );
@@ -337,6 +358,13 @@ class ContinuingDisbursementController extends Controller
         } catch (\Exception $e) {
 
             DB::rollBack();
+
+            \Log::error('Failed to create continuing disbursement:', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'user_id' => $user?->id,
+                'barangay_id' => $user?->barangay_id,
+            ]);
 
             return response()->json([
                 'status' => false,

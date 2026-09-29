@@ -1669,7 +1669,6 @@ class DisbursementController extends Controller
                     'cheque_number' => $request->cheque_number,
                     'cheque_date'   => $request->cheque_date,
                     'bank_id'       => $request->bank_id,
-                    'bank_status'   => $bankAccount->bank_status,
                     'payee'         => $request->payee,
                     'payee2'        => $request->payee2,
                 ]);
@@ -1704,7 +1703,6 @@ class DisbursementController extends Controller
                     'bank_id'       => $request->bank_id,
                     'cheque_number' => $request->cheque_number,
                     'cheque_date'   => $request->cheque_date,
-                    'bank_status'   => $bankAccount->bank_status,
                 ]);
             }
 
