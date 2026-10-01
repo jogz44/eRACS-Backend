@@ -31,6 +31,11 @@ class AccountsLibController extends Controller
         }
     }
 
+    protected function isExpenseAccountUsed(string $column, int $id): bool
+    {
+        return \App\Models\TranAppropriation::where($column, $id)->exists();
+    }
+
     // Get all fiscal years for current barangay
     public function getFiscalYears()
     {
@@ -1514,6 +1519,13 @@ class AccountsLibController extends Controller
         $subType = LibExpenseSubType::where('id', $subTypeId)
             ->where('sub_item_id', $subItem->id)
             ->firstOrFail();
+
+        if ($this->isExpenseAccountUsed('expense_sub_type_id', $subType->id)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot delete this sub-type because it is already used in existing appropriation records.',
+            ], 422);
+        }
 
         $subTypeName = $subType->name;
 

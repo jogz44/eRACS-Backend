@@ -934,6 +934,44 @@ class AppropriationController extends Controller
     // FIXED: Save allocation from modal - supports all 6 expense hierarchy levels
     public function saveAllocation(Request $request, Budget $budget)
     {
+        /*
+        |--------------------------------------------------------------------------
+        | REMOVE ALLOCATION ENTRIES WITH ZERO AMOUNT FROM HIERARCHY VALIDATION
+        |--------------------------------------------------------------------------
+        |
+        | When the user clears an appropriation amount, the frontend may still
+        | send the old hierarchy IDs. Those IDs may no longer exist in the
+        | Accounts Library, so validating them with "exists" would fail before
+        | Step 9 gets a chance to delete the old appropriation.
+        |
+        | A zero amount means the allocation is being removed, so its hierarchy
+        | IDs are not needed for validation.
+        |--------------------------------------------------------------------------
+        */
+
+        $allocations = $request->input('allocations', []);
+
+        foreach ($allocations as $index => &$allocation) {
+
+            $amount = $allocation['amount'] ?? null;
+
+            if ($amount !== null && $amount !== '' && (float) $amount <= 0) {
+
+                $allocation['expense_class_id'] = null;
+                $allocation['expense_type_id'] = null;
+                $allocation['expense_item_id'] = null;
+                $allocation['expense_sub_item_id'] = null;
+                $allocation['expense_sub_type_id'] = null;
+                $allocation['expense_sub_sub_type_id'] = null;
+            }
+        }
+
+        unset($allocation);
+
+        $request->merge([
+            'allocations' => $allocations,
+        ]);
+
         $validated = $request->validate([
             'allocations' => 'required|array',
 
@@ -1166,49 +1204,63 @@ class AppropriationController extends Controller
         |--------------------------------------------------------------------------
         */
 
+        // Validate that an appropriation cannot be reduced below
+        // the amount already disbursed from THAT EXACT appropriation.
         foreach ($validated['allocations'] as $allocation) {
 
-            $existingAllocation = $existingAllocations->first(
-                function ($existing) use ($allocation) {
+            $existingAllocationQuery = TranAppropriation::query()
+                ->where('budget_id', $budget->id)
+                ->where('barangay_id', $request->user()->barangay_id);
 
-                    return $existing->expense_class_id == (
-                        $allocation['expense_class_id'] ?? null
-                    )
-                    && $existing->expense_type_id == (
-                        $allocation['expense_type_id'] ?? null
-                    )
-                    && $existing->expense_item_id == (
-                        $allocation['expense_item_id'] ?? null
-                    )
-                    && $existing->expense_sub_item_id == (
-                        $allocation['expense_sub_item_id'] ?? null
-                    )
-                    && $existing->expense_sub_type_id == (
-                        $allocation['expense_sub_type_id'] ?? null
-                    )
-                    && $existing->expense_sub_sub_type_id == (
+            // Match the COMPLETE expense hierarchy
+            $existingAllocationQuery
+                ->where(function ($query) use ($allocation) {
+                    $query->where('expense_class_id', $allocation['expense_class_id'] ?? null);
+                })
+                ->where(function ($query) use ($allocation) {
+                    $query->where('expense_type_id', $allocation['expense_type_id'] ?? null);
+                })
+                ->where(function ($query) use ($allocation) {
+                    $query->where('expense_item_id', $allocation['expense_item_id'] ?? null);
+                })
+                ->where(function ($query) use ($allocation) {
+                    $query->where('expense_sub_item_id', $allocation['expense_sub_item_id'] ?? null);
+                })
+                ->where(function ($query) use ($allocation) {
+                    $query->where('expense_sub_type_id', $allocation['expense_sub_type_id'] ?? null);
+                })
+                ->where(function ($query) use ($allocation) {
+                    $query->where(
+                        'expense_sub_sub_type_id',
                         $allocation['expense_sub_sub_type_id'] ?? null
                     );
-                }
-            );
+                });
 
-            if ($existingAllocation) {
+            $existingAllocation = $existingAllocationQuery->first();
 
-                $disbursedAmount = \App\Models\TranExpenseDetail::where(
-                    'appropriation_id',
-                    $existingAllocation->id
-                )->sum('amount');
+            if (!$existingAllocation) {
+                continue;
+            }
 
-                if ($allocation['amount'] < $disbursedAmount) {
+            // Calculate disbursement for THIS EXACT appropriation
+            $disbursedAmount = (float) \App\Models\TranExpenseDetail::where(
+                'appropriation_id',
+                $existingAllocation->id
+            )->sum('amount');
 
-                    return response()->json([
-                        'status' => false,
-                        'message' => sprintf(
-                            'Cannot reduce appropriation below the disbursed amount. New amount must be at least ₱%s.',
-                            number_format($disbursedAmount, 2)
-                        )
-                    ], 422);
-                }
+            // Do not allow the appropriation to go below what was already disbursed
+            if ((float) $allocation['amount'] < $disbursedAmount) {
+
+                $expenseIdentifier = $this->getExpenseIdentifier($allocation);
+
+                return response()->json([
+                    'status' => false,
+                    'message' => sprintf(
+                        'Cannot reduce appropriation for %s below the disbursed amount. New amount must be at least ₱%s.',
+                        $expenseIdentifier,
+                        number_format($disbursedAmount, 2)
+                    )
+                ], 422);
             }
         }
 
