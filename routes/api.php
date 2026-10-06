@@ -125,6 +125,8 @@ Route::prefix('barangay')->group(function () {
         Route::post('expense-classes', [AccountsLibController::class, 'createExpenseClass']);
         Route::put('expense-classes/{classId}', [AccountsLibController::class, 'updateClass']);
         Route::delete('expense-classes/{classId}', [AccountsLibController::class, 'deleteClass']);
+        Route::get('expense-classes/{classId}/delete-check', [AccountsLibController::class, 'expenseClassDeleteCheck']);
+        Route::get('expense-accounts/delete-check/{level}/{id}', [AccountsLibController::class, 'libraryDeleteCheck']);
         Route::patch('expense-classes/update-order', [AccountsLibController::class, 'updateClassOrder']);
         //
         Route::post('expense-classes/copy-to-year/{sourceYearId}',

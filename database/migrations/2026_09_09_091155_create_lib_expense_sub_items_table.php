@@ -11,8 +11,9 @@ return new class extends Migration
         Schema::create('lib_expense_sub_items', function (Blueprint $table) {
             $table->id();
 
-            $table->foreignId('sub_type_id')
-                ->constrained('lib_expense_sub_types')
+            // Belongs to lib_expense_items
+            $table->foreignId('expense_item_id')
+                ->constrained('lib_expense_items')
                 ->cascadeOnDelete();
 
             $table->string('name');
@@ -22,11 +23,11 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique([
-                'sub_type_id',
+                'expense_item_id',
                 'name'
             ]);
 
-            $table->index('sub_type_id');
+            $table->index('expense_item_id');
         });
     }
 
