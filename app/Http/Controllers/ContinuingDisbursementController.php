@@ -167,7 +167,7 @@ class ContinuingDisbursementController extends Controller
             $validated = $request->validate([
                 'date' => 'required|date',
                 'dvNumber' => 'required|string|max:255',
-                'payee' => 'required|string|max:255',
+                'payee' => ['required', 'string', 'max:255', new \App\Rules\RegisteredOrExistingPayee],
                 'payee2' => 'nullable|string|max:255',
                 'amount' => 'required|numeric|min:0',
                 'bank_status' => 'required|in:online,offline',
@@ -182,7 +182,7 @@ class ContinuingDisbursementController extends Controller
                 'deductions' => 'nullable|array',
                 'deductions.*.deduction_code_id' => 'nullable|exists:lib_deduction_codes,id',
                 'deductions.*.gross_vat_inc' => 'required|numeric',
-                'deductions.*.gross_vat_exc' => 'nullable|numeric',
+                'deductions.*.gross_vat_exc' => 'required|numeric',
                 'deductions.*.deduction_amount' => 'required|numeric',
                 'deductions.*.net_amount' => 'required|numeric',
 
@@ -533,7 +533,7 @@ class ContinuingDisbursementController extends Controller
 
             'date' => 'required|date',
             'dvNumber' => 'required|string|max:255',
-            'payee' => 'required|string|max:255',
+            'payee' => ['required', 'string', 'max:255', new \App\Rules\RegisteredOrExistingPayee],
             'payee2' => 'nullable|string|max:255',
             'amount' => 'required|numeric|min:0',
             'bank_status' => 'required|in:online,offline',

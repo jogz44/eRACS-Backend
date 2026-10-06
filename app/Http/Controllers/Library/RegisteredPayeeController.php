@@ -8,12 +8,47 @@ use App\Models\RegisteredPayee;
 
 class RegisteredPayeeController extends Controller
 {
-    // GET /api/library/registered-payees
-    public function index()
+    /**
+     * Resolves the barangay the request should be scoped to.
+     *
+     * Barangay users are locked to their own barangay. Admins may pass
+     * ?barangay_id= to inspect a specific barangay, otherwise they see all.
+     */
+    protected function resolveBarangayId(Request $request): ?int
     {
+        $barangayId = $request->user()?->barangay_id;
+
+        if ($barangayId) {
+            return (int) $barangayId;
+        }
+
+        if ($request->user('admin') && $request->filled('barangay_id')) {
+            return (int) $request->input('barangay_id');
+        }
+
+        return null;
+    }
+
+    // GET /api/library/registered-payees
+    public function index(Request $request)
+    {
+        $barangayId = $this->resolveBarangayId($request);
+
+        $payees = RegisteredPayee::query()
+            ->when(
+                $barangayId,
+                fn ($query) => $query->where('barangay_id', $barangayId)
+            )
+            ->when(
+                $request->filled('type'),
+                fn ($query) => $query->where('type', $request->input('type'))
+            )
+            ->orderBy('payee_name')
+            ->get();
+
         return response()->json([
             'status' => true,
-            'data' => RegisteredPayee::orderBy('payee_name')->get()
+            'data' => $payees
         ]);
     }
 
@@ -114,27 +149,26 @@ class RegisteredPayeeController extends Controller
     {
         $q = $request->q;
 
+        $barangayId = $this->resolveBarangayId($request);
+
+        //Only active payees are offered for disbursements.
         $payees = RegisteredPayee::query()
+            ->where('status', 'Active')
+            ->when(
+                $barangayId,
+                fn ($query) => $query->where('barangay_id', $barangayId)
+            )
             ->when($q, function ($query) use ($q) {
-                $query->where('payee_name', 'like', "%{$q}%")
-                    ->orWhere('payee2_name', 'like', "%{$q}%")
-                    ->orWhere('firstname', 'like', "%{$q}%")
-                    ->orWhere('lastname', 'like', "%{$q}%");
+                $query->where(function ($query) use ($q) {
+                    $query->where('payee_name', 'like', "%{$q}%")
+                        ->orWhere('payee2_name', 'like', "%{$q}%")
+                        ->orWhere('firstname', 'like', "%{$q}%")
+                        ->orWhere('lastname', 'like', "%{$q}%");
+                });
             })
+            ->orderBy('payee_name')
             ->limit(20)
             ->get();
-
-        //this query to show only the active payees for disbursement
-        // $payees = RegisteredPayee::query()
-        //         ->where('status', 'Active')
-        //         ->when($q, function ($query) use ($q) {
-        //             $query->where('payee_name', 'like', "%{$q}%")
-        //                 ->orWhere('payee2_name', 'like', "%{$q}%")
-        //                 ->orWhere('firstname', 'like', "%{$q}%")
-        //                 ->orWhere('lastname', 'like', "%{$q}%");
-        //         })
-        //         ->limit(20)
-        //         ->get();
 
         return response()->json([
             'status' => true,

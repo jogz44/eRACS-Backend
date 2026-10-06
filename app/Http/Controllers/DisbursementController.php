@@ -254,8 +254,8 @@ class DisbursementController extends Controller
             'date' => 'required|string|regex:/^\d{2}\/\d{2}\/\d{4}$/',
             'dv_number' => 'nullable|string',
 
-            'payee' => 'required|string',
-            'payee2' => 'required|string',
+            'payee' => ['required', 'string', 'max:255', new \App\Rules\RegisteredOrExistingPayee],
+            'payee2' => ['nullable', 'string', 'max:255'],
 
             'dv_amount' => 'required|numeric|min:0',
 
@@ -858,8 +858,8 @@ class DisbursementController extends Controller
             ],
             'ref_dv_number' => 'required|string|exists:disbursements,dv_number',
 
-            'payee' => 'required|string',
-            'payee2' => 'required|string',
+            'payee' => ['required', 'string', 'max:255', new \App\Rules\RegisteredOrExistingPayee],
+            'payee2' => ['nullable', 'string', 'max:255'],
             'dv_amount' => 'required|numeric|min:0',
 
             'expenses' => 'array',

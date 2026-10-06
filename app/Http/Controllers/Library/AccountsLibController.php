@@ -31,9 +31,414 @@ class AccountsLibController extends Controller
         }
     }
 
-    protected function isExpenseAccountUsed(string $column, int $id): bool
+/**
+     * Map every library level to its descriptor and friendly label.
+     */
+    protected function collectExpenseClassDescendantIds(LibExpenseClass $class): array
     {
-        return \App\Models\TranAppropriation::where($column, $id)->exists();
+        $typeIds = LibExpenseType::where('expense_class_id', $class->id)->pluck('id')->all();
+
+        $itemIds = $typeIds
+            ? LibExpenseItem::whereIn('expense_type_id', $typeIds)->pluck('id')->all()
+            : [];
+
+        $subItemIds = $itemIds
+            ? LibExpenseSubItem::whereIn('expense_item_id', $itemIds)->pluck('id')->all()
+            : [];
+
+        $subTypeIds = $subItemIds
+            ? LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->pluck('id')->all()
+            : [];
+
+        $subSubTypeIds = $subTypeIds
+            ? LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->pluck('id')->all()
+            : [];
+
+        return compact('typeIds', 'itemIds', 'subItemIds', 'subTypeIds', 'subSubTypeIds');
+    }
+
+    /**
+     * Collect an item and every descendant item id. lib_expense_items.parent_item_id
+     * is a self-referencing FK, so the hierarchy has to be walked iteratively.
+     */
+    protected function collectDescendantItemIds(int $id): array
+    {
+        $collected = [(int) $id];
+        $queue     = [(int) $id];
+
+        while ($queue) {
+            $children = LibExpenseItem::whereIn('parent_item_id', $queue)->pluck('id')
+                ->map(fn ($value) => (int) $value)
+                ->all();
+
+            $children = array_diff($children, $collected);
+
+            if (! $children) {
+                break;
+            }
+
+            $collected = array_merge($collected, $children);
+            $queue     = $children;
+        }
+
+        return array_values($collected);
+    }
+
+    /**
+     * Map every library level to its descriptor and friendly label.
+     */
+    protected function libraryLevels(): array
+    {
+        return [
+            'class'      => ['label' => 'class'],
+            'type'       => ['label' => 'type'],
+            'item'       => ['label' => 'item'],
+            'subitem'    => ['label' => 'sub-item'],
+            'subtype'    => ['label' => 'sub-type'],
+            'subsubtype' => ['label' => 'item'],
+        ];
+    }
+
+    /**
+     * Build the column => id map used to find appropriations for a library node,
+     * including every descendant of that node.
+     *
+     * NOTE: tran_appropriations.expense_sub_item_id is constrained to lib_expense_items
+     * in the schema (mis-target), so in practice it stores item ids. It is therefore
+     * matched against both sub-item ids and item ids.
+     */
+    protected function libraryNodeIdMap(string $level, int $id): array
+    {
+        $itemIds = [];
+        $subItemIds = [];
+        $subTypeIds = [];
+        $subSubTypeIds = [];
+
+        switch ($level) {
+            case 'class':
+                $descendants = $this->collectExpenseClassDescendantIds(
+                    LibExpenseClass::findOrFail($id)
+                );
+                $typeIds      = $descendants['typeIds'];
+                $itemIds      = $descendants['itemIds'];
+                $subItemIds   = $descendants['subItemIds'];
+                $subTypeIds   = $descendants['subTypeIds'];
+                $subSubTypeIds = $descendants['subSubTypeIds'];
+                break;
+
+            case 'type':
+                $typeIds      = [$id];
+                $itemIds      = LibExpenseItem::whereIn('expense_type_id', $typeIds)->pluck('id')->all();
+                $subItemIds   = $itemIds
+                    ? LibExpenseSubItem::whereIn('expense_item_id', $itemIds)->pluck('id')->all()
+                    : [];
+                $subTypeIds   = $subItemIds
+                    ? LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->pluck('id')->all()
+                    : [];
+                $subSubTypeIds = $subTypeIds
+                    ? LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->pluck('id')->all()
+                    : [];
+                break;
+
+            case 'item':
+                $typeIds = [];
+                $itemIds = $this->collectDescendantItemIds($id);
+                $subItemIds   = $itemIds
+                    ? LibExpenseSubItem::whereIn('expense_item_id', $itemIds)->pluck('id')->all()
+                    : [];
+                $subTypeIds   = $subItemIds
+                    ? LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->pluck('id')->all()
+                    : [];
+                $subSubTypeIds = $subTypeIds
+                    ? LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->pluck('id')->all()
+                    : [];
+                break;
+
+            case 'subitem':
+                $typeIds    = [];
+                $itemIds    = [];
+                $subItemIds = [$id];
+                $subTypeIds = LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->pluck('id')->all();
+                $subSubTypeIds = $subTypeIds
+                    ? LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->pluck('id')->all()
+                    : [];
+                break;
+
+            case 'subtype':
+                $typeIds       = [];
+                $itemIds       = [];
+                $subItemIds    = [];
+                $subTypeIds    = [$id];
+                $subSubTypeIds = LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->pluck('id')->all();
+                break;
+
+            case 'subsubtype':
+            default:
+                $typeIds = $itemIds = $subItemIds = $subTypeIds = [];
+                $subSubTypeIds = [$id];
+                break;
+        }
+
+        return [
+            'expense_class_id'        => $level === 'class' ? [$id] : [],
+            'expense_type_id'         => $typeIds ?: [],
+            'expense_item_id'         => $itemIds ?: [],
+            'expense_sub_item_id'     => array_values(array_unique(array_merge($subItemIds, $itemIds))),
+            'expense_sub_type_id'     => $subTypeIds ?: [],
+            'expense_sub_sub_type_id' => $subSubTypeIds ?: [],
+        ];
+    }
+
+    /**
+     * Determine whether a library node (or any of its descendants) is already
+     * allocated in an appropriation, and whether those allocations were already
+     * disbursed (regular or continuing).
+     */
+    protected function getLibraryNodeUsage($barangayId, string $level, int $id): array
+    {
+        $idMap = $this->libraryNodeIdMap($level, $id);
+
+        $appropriationModels = \App\Models\TranAppropriation::where('barangay_id', $barangayId)
+            ->where(function ($query) use ($idMap) {
+                foreach ($idMap as $column => $ids) {
+                    if ($ids) {
+                        $query->orWhereIn($column, $ids);
+                    }
+                }
+            })
+            ->with([
+                'budget',
+                'expenseClass',
+                'expenseType',
+                'expenseItem',
+                'expenseSubItem',
+                'expenseSubType',
+                'expenseSubSubType',
+            ])
+            ->orderByDesc('transaction_date')
+            ->orderByDesc('id')
+            ->get();
+
+        $appropriations = $appropriationModels->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        $disbursementCount = 0;
+        $augmentationCount = 0;
+
+        if ($appropriations) {
+            // Regular disbursements
+            $disbursementCount += \App\Models\TranExpenseDetail::whereIn('appropriation_id', $appropriations)
+                ->whereNotNull('disbursement_id')
+                ->distinct()
+                ->count('disbursement_id');
+
+            // Continuing disbursements (current year and carried over)
+            $continuingAccountIds = \App\Models\ContApproAccounts::whereIn('tranAppropriation_id', $appropriations)
+                ->pluck('id')
+                ->all();
+
+            if ($continuingAccountIds) {
+                $disbursementCount += \App\Models\ContTranExpenseDetail::whereIn('cont_appro_account_id', $continuingAccountIds)
+                    ->whereNotNull('cont_disbursement_id')
+                    ->distinct()
+                    ->count('cont_disbursement_id');
+            }
+
+            // Budget augmentations move funds between appropriations, so they also block deletion
+            $augmentationCount = DB::table('budget_augmentation_details')
+                ->where(function ($query) use ($appropriations) {
+                    $query->whereIn('from_appropriation_id', $appropriations)
+                        ->orWhereIn('to_appropriation_id', $appropriations);
+                })
+                ->count();
+        }
+
+        return [
+            'has_allocation'         => count($appropriations) > 0,
+            'allocation_count'       => count($appropriations),
+            'appropriation_ids'      => $appropriations,
+            'appropriation_records'  => $this->buildAppropriationRecords($appropriationModels),
+            'has_disbursement'       => $disbursementCount > 0,
+            'disbursement_count'     => $disbursementCount,
+            'has_augmentation'       => $augmentationCount > 0,
+            'augmentation_count'     => $augmentationCount,
+            'can_delete'             => $disbursementCount === 0 && $augmentationCount === 0,
+        ];
+    }
+
+    /**
+     * Shape the matched appropriations for the library delete-check dialog so the
+     * UI can list which allocations would be removed along with the node.
+     */
+    protected function buildAppropriationRecords($appropriationModels): array
+    {
+        return $appropriationModels->map(function ($appropriation) {
+            $budget = $appropriation->budget;
+            $budgetType = $budget->budget_type;
+
+            return [
+                'id'          => (int) $appropriation->id,
+                'account'     => $this->appropriationAccountLabel($appropriation),
+                'budget_type' => $budgetType instanceof \App\BudgetType
+                    ? $budgetType->label()
+                    : ($budgetType ? (string) $budgetType : null),
+                'description' => $budget->description,
+                'amount'      => $appropriation->amount,
+                'status'      => $appropriation->status,
+                'date'        => optional($appropriation->transaction_date)->format('Y-m-d'),
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * Build a readable "Class > Type > Item > ..." label from the expense
+     * hierarchy the appropriation was allocated against.
+     */
+    protected function appropriationAccountLabel(\App\Models\TranAppropriation $appropriation): ?string
+    {
+        $segments = array_filter([
+            $appropriation->expenseClass?->name,
+            $appropriation->expenseType?->name,
+            $appropriation->expenseItem?->name,
+            $appropriation->expenseSubItem?->name,
+            $appropriation->expenseSubType?->name,
+            $appropriation->expenseSubSubType?->name,
+        ], fn ($value) => filled($value));
+
+        return $segments ? implode(' > ', $segments) : null;
+    }
+
+    /**
+     * Determine whether an expense class (or any of its descendants) is already
+     * allocated in an appropriation, and whether those allocations were already
+     * disbursed (regular or continuing).
+     */
+    protected function getExpenseClassUsage($barangayId, LibExpenseClass $class): array
+    {
+        return $this->getLibraryNodeUsage($barangayId, 'class', $class->id);
+    }
+
+    /**
+     * Block deletion of a library node when its allocation has already been
+     * disbursed (or moved by a budget augmentation). Returns null when deletion
+     * may proceed.
+     */
+    protected function guardLibraryNodeDelete($barangayId, string $level, int $id)
+    {
+        $levels = $this->libraryLevels();
+
+        if (! isset($levels[$level])) {
+            abort(400, 'Unknown library level');
+        }
+
+        $label = $levels[$level]['label'];
+        $usage = $this->getLibraryNodeUsage($barangayId, $level, $id);
+
+        if ($usage['has_disbursement']) {
+            return response()->json([
+                'success'          => false,
+                'reason'           => 'disbursement',
+                'message'          => "Cannot delete this {$label} because it is already used in existing appropriation records and its allocation has already been disbursed.",
+                'disbursement_count' => $usage['disbursement_count'],
+                'allocation_count' => $usage['allocation_count'],
+            ], 422);
+        }
+
+        if ($usage['has_augmentation']) {
+            return response()->json([
+                'success'          => false,
+                'reason'           => 'augmentation',
+                'message'          => "Cannot delete this {$label} because its allocation was moved by a budget augmentation.",
+                'augmentation_count' => $usage['augmentation_count'],
+                'allocation_count' => $usage['allocation_count'],
+            ], 422);
+        }
+
+        return null;
+    }
+
+    /**
+     * Public endpoint so the library UI can warn the user before deleting.
+     */
+    public function expenseClassDeleteCheck($classId)
+    {
+        $this->verifyBarangayAccess();
+        $barangayId = Auth::user()->barangay_id;
+
+        $class = LibExpenseClass::forBarangay($barangayId)->findOrFail($classId);
+
+        return $this->libraryDeleteCheckResponse($barangayId, 'class', $class->id, $class->name);
+    }
+
+    /**
+     * Generic delete-check for any library level.
+     */
+    public function libraryDeleteCheck(string $level, $id)
+    {
+        $this->verifyBarangayAccess();
+        $barangayId = Auth::user()->barangay_id;
+
+        return $this->libraryDeleteCheckResponse($barangayId, $level, (int) $id);
+    }
+
+    /**
+     * Resolve the library node for the authenticated barangay, so the pre-check
+     * endpoint can never be pointed at another barangay's records.
+     */
+    protected function findLibraryNodeForBarangay($barangayId, string $level, int $id)
+    {
+        switch ($level) {
+            case 'class':
+                return LibExpenseClass::forBarangay($barangayId)->findOrFail($id);
+
+            case 'type':
+                return LibExpenseType::whereHas('expenseClass', function ($query) use ($barangayId) {
+                    $query->forBarangay($barangayId);
+                })->findOrFail($id);
+
+            case 'item':
+                return LibExpenseItem::whereHas('expenseType.expenseClass', function ($query) use ($barangayId) {
+                    $query->forBarangay($barangayId);
+                })->findOrFail($id);
+
+            case 'subitem':
+                return LibExpenseSubItem::whereHas('expenseItem.expenseType.expenseClass', function ($query) use ($barangayId) {
+                    $query->forBarangay($barangayId);
+                })->findOrFail($id);
+
+            case 'subtype':
+                return LibExpenseSubType::whereHas('subItem.expenseItem.expenseType.expenseClass', function ($query) use ($barangayId) {
+                    $query->forBarangay($barangayId);
+                })->findOrFail($id);
+
+            case 'subsubtype':
+            default:
+                return LibExpenseSubSubType::whereHas('subType.subItem.expenseItem.expenseType.expenseClass', function ($query) use ($barangayId) {
+                    $query->forBarangay($barangayId);
+                })->findOrFail($id);
+        }
+    }
+
+    protected function libraryDeleteCheckResponse($barangayId, string $level, int $id, ?string $name = null)
+    {
+        $levels = $this->libraryLevels();
+
+        if (! isset($levels[$level])) {
+            abort(400, 'Unknown library level');
+        }
+
+        $node = $this->findLibraryNodeForBarangay($barangayId, $level, $id);
+
+        $usage = $this->getLibraryNodeUsage($barangayId, $level, $node->id);
+        unset($usage['appropriation_ids']);
+
+        $usage['level'] = $level;
+        $usage['label'] = $levels[$level]['label'];
+
+        if ($name) {
+            $usage['class_name'] = $name;
+        }
+
+        return response()->json(['success' => true, 'data' => $usage]);
     }
 
     // Get all fiscal years for current barangay
@@ -580,12 +985,41 @@ class AccountsLibController extends Controller
 
         $barangayId = Auth::user()->barangay_id;
 
+        $class = LibExpenseClass::forBarangay($barangayId)->findOrFail($classId);
+
+        $usage = $this->getExpenseClassUsage($barangayId, $class);
+
+        // Already disbursed (regular or continuing) - deletion is not allowed
+        if ($usage['has_disbursement']) {
+            return response()->json([
+                'success'          => false,
+                'reason'           => 'disbursement',
+                'message'          => 'Cannot delete this class because its allocation in the appropriation has already been disbursed.',
+                'disbursement_count' => $usage['disbursement_count'],
+                'allocation_count' => $usage['allocation_count'],
+            ], 422);
+        }
+
+        // Funds were moved by a budget augmentation - deletion is not allowed
+        if ($usage['has_augmentation']) {
+            return response()->json([
+                'success'          => false,
+                'reason'           => 'augmentation',
+                'message'          => 'Cannot delete this class because its allocation was moved by a budget augmentation.',
+                'augmentation_count' => $usage['augmentation_count'],
+                'allocation_count' => $usage['allocation_count'],
+            ], 422);
+        }
+
         $logData = [];
+        $deletedAppropriations = 0;
 
         DB::transaction(function () use (
             $barangayId,
             $classId,
-            &$logData
+            $usage,
+            &$logData,
+            &$deletedAppropriations
         ) {
             $class = LibExpenseClass::forBarangay($barangayId)
                 ->with([
@@ -598,25 +1032,16 @@ class AccountsLibController extends Controller
             $logData['fiscal_year'] =
                 optional($class->fiscalYear)->year ?? 'N/A';
 
+            // Remove the still-undisbursed appropriation allocations tied to this class
+            if ($usage['appropriation_ids']) {
+                $deletedAppropriations = $this->deleteExpenseClassAppropriations(
+                    $barangayId,
+                    $usage['appropriation_ids']
+                );
+            }
+
             foreach ($class->types as $type) {
-
-                foreach ($type->items as $item) {
-
-                    foreach ($item->subItems as $subItem) {
-
-                        foreach ($subItem->subTypes as $subType) {
-
-                            $subType->subSubTypes()->delete();
-                        }
-
-                        $subItem->subTypes()->delete();
-                    }
-
-                    $item->subItems()->delete();
-                    $item->delete();
-                }
-
-                $type->items()->delete();
+                $this->tearDownExpenseItems($type->items()->pluck('id')->all());
                 $type->delete();
             }
 
@@ -628,13 +1053,137 @@ class AccountsLibController extends Controller
                 'Deleted expense class "' .
                 $logData['class_name'] .
                 '" in fiscal year ' .
-                $logData['fiscal_year']
+                $logData['fiscal_year'] .
+                ($deletedAppropriations > 0
+                    ? ' (also removed ' . $deletedAppropriations . ' undisbursed appropriation allocation(s))'
+                    : '')
             );
         });
 
         return response()->json([
-            'message' => 'Class deleted successfully'
+            'success'               => true,
+            'message'               => 'Class deleted successfully',
+            'deleted_appropriations' => $deletedAppropriations,
         ]);
+    }
+
+    /**
+     * Delete expense items (and everything beneath them) deepest-first.
+     *
+     * lib_expense_items.parent_item_id is a self-referencing FK with onDelete('no action'),
+     * so child items must be removed before their parent or SQL Server rejects the delete.
+     */
+    protected function tearDownExpenseItems(array $itemIds): void
+    {
+        if (!$itemIds) {
+            return;
+        }
+
+        $subItemIds = LibExpenseSubItem::whereIn('expense_item_id', $itemIds)->pluck('id')->all();
+
+        if ($subItemIds) {
+            $subTypeIds = LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->pluck('id')->all();
+
+            if ($subTypeIds) {
+                LibExpenseSubSubType::whereIn('sub_type_id', $subTypeIds)->delete();
+            }
+
+            LibExpenseSubType::whereIn('sub_item_id', $subItemIds)->delete();
+            LibExpenseSubItem::whereIn('id', $subItemIds)->delete();
+        }
+
+        while (true) {
+            $remaining = LibExpenseItem::whereIn('id', $itemIds)->pluck('id');
+
+            if ($remaining->isEmpty()) {
+                return;
+            }
+
+            $parentIds = LibExpenseItem::whereIn('parent_item_id', $remaining)
+                ->distinct()
+                ->pluck('parent_item_id');
+
+            $leafIds = $remaining->diff($parentIds)->values();
+
+            if ($leafIds->isEmpty()) {
+                // Defensive: broken parent chain, remove one row to guarantee progress
+                $leafIds = $remaining->take(1);
+            }
+
+            LibExpenseItem::whereIn('id', $leafIds)->delete();
+        }
+    }
+
+    /**
+     * Remove appropriation allocations (and their dependent rows) for a class that
+     * has no disbursement yet.
+     */
+    protected function deleteExpenseClassAppropriations($barangayId, array $appropriationIds): int
+    {
+        if (!$appropriationIds) {
+            return 0;
+        }
+
+        // Continuing accounts carry no disbursement, but their rows still need cleaning up
+        $continuingAccountIds = \App\Models\ContApproAccounts::whereIn('tranAppropriation_id', $appropriationIds)
+            ->pluck('id')
+            ->all();
+
+        if ($continuingAccountIds) {
+            \App\Models\ContTranExpenseDetail::whereIn('cont_appro_account_id', $continuingAccountIds)->delete();
+            \App\Models\ContApproAccounts::whereIn('id', $continuingAccountIds)->delete();
+        }
+
+        // Expense details without a disbursement, plus their admin review trails
+        $expenseDetails = \App\Models\TranExpenseDetail::whereIn('appropriation_id', $appropriationIds)
+            ->whereNull('disbursement_id')
+            ->get();
+
+        $expenseDetailIds = $expenseDetails->pluck('id')->all();
+
+        if ($expenseDetailIds) {
+            DB::table('admin_reviews')
+                ->where('reviewable_type', \App\Models\TranExpenseDetail::class)
+                ->whereIn('reviewable_id', $expenseDetailIds)
+                ->delete();
+        }
+
+        $expenseDetails->each->delete();
+
+        // Give the freed funds back to their budgets so the appropriation table's
+        // "Unappropriated" column (budgets.current_amount) reflects the deletion.
+        \App\Models\TranAppropriation::where('barangay_id', $barangayId)
+            ->whereIn('id', $appropriationIds)
+            ->select('budget_id', 'amount')
+            ->get()
+            ->groupBy('budget_id')
+            ->each(function ($deleted, $budgetId) use ($barangayId) {
+                if (! $budgetId) {
+                    return;
+                }
+
+                $releasedAmount = $deleted->sum(fn ($row) => (float) $row->amount);
+
+                if ($releasedAmount > 0) {
+                    $budget = \App\Models\Budget::withoutGlobalScopes()
+                        ->where('barangay_id', $barangayId)
+                        ->whereKey($budgetId)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (! $budget) {
+                        throw new \RuntimeException(
+                            "Could not restore released appropriation funds: budget {$budgetId} was not found for barangay {$barangayId}."
+                        );
+                    }
+
+                    $budget->increment('current_amount', $releasedAmount);
+                }
+            });
+
+        return \App\Models\TranAppropriation::where('barangay_id', $barangayId)
+            ->whereIn('id', $appropriationIds)
+            ->delete();
     }
 
     public function updateTypeOrder(Request $request)
@@ -779,12 +1328,22 @@ class AccountsLibController extends Controller
         $barangayId = Auth::user()->barangay_id;
 
         $logData = [];
+        $deletedAppropriations = 0;
+
+        // Block when the allocation has already been disbursed
+        if ($blocked = $this->guardLibraryNodeDelete($barangayId, 'type', (int) $typeId)) {
+            return $blocked;
+        }
+
+        $typeUsage = $this->getLibraryNodeUsage($barangayId, 'type', (int) $typeId);
 
         DB::transaction(function () use (
             $barangayId,
             $classId,
             $typeId,
-            &$logData
+            $typeUsage,
+            &$logData,
+            &$deletedAppropriations
         ) {
             $type = LibExpenseType::where(
                 'expense_class_id',
@@ -807,22 +1366,10 @@ class AccountsLibController extends Controller
                 optional($type->expenseClass)->fiscal_year_id
             )->value('year');
 
-            foreach ($type->items as $item) {
+            $this->deleteExpenseClassAppropriations($barangayId, $typeUsage['appropriation_ids']);
+            $deletedAppropriations = count($typeUsage['appropriation_ids']);
 
-                foreach ($item->subItems as $subItem) {
-
-                    foreach ($subItem->subTypes as $subType) {
-
-                        $subType->subSubTypes()->delete();
-                    }
-
-                    $subItem->subTypes()->delete();
-                }
-
-                $item->subItems()->delete();
-            }
-
-            $type->items()->delete();
+            $this->tearDownExpenseItems($type->items()->pluck('id')->all());
             $type->delete();
 
             AdminAuthController::logUserAction(
@@ -833,12 +1380,17 @@ class AccountsLibController extends Controller
                 '" under class "' .
                 $logData['class_name'] .
                 '" for fiscal year ' .
-                $logData['fy_year']
+                $logData['fy_year'] .
+                ($deletedAppropriations > 0
+                    ? ' (also removed ' . $deletedAppropriations . ' undisbursed appropriation allocation(s))'
+                    : '')
             );
         });
 
         return response()->json([
-            'message' => 'Type deleted successfully'
+            'success' => true,
+            'message' => 'Type deleted successfully',
+            'deleted_appropriations' => $deletedAppropriations,
         ]);
     }
 
@@ -1012,8 +1564,20 @@ class AccountsLibController extends Controller
         $expenseClass = $type->expenseClass;
         $fyYear       = \App\Models\LibFiscalYear::whereKey($expenseClass->fiscal_year_id)->value('year');
 
+        // Block when the allocation has already been disbursed
+        if ($blocked = $this->guardLibraryNodeDelete($barangayId, 'item', (int) $item->id)) {
+            return $blocked;
+        }
 
-        $item->delete();
+        $itemUsage = $this->getLibraryNodeUsage($barangayId, 'item', (int) $item->id);
+
+        DB::transaction(function () use ($barangayId, $itemUsage, $item) {
+            // Also removes the appropriation allocations that reference this item
+            $this->deleteExpenseClassAppropriations($barangayId, $itemUsage['appropriation_ids']);
+
+            // Removes the item, its child items, and everything beneath them
+            $this->tearDownExpenseItems($this->collectDescendantItemIds((int) $item->id));
+        });
 
         // Log user action
         AdminAuthController::logUserAction(
@@ -1023,9 +1587,16 @@ class AccountsLibController extends Controller
             .'" under type "'.$type->name
             .'" in class "'.$expenseClass->name
             .'" for fiscal year '.$fyYear
+            .(count($itemUsage['appropriation_ids']) > 0
+                ? ' (also removed '.count($itemUsage['appropriation_ids']).' undisbursed appropriation allocation(s))'
+                : '')
         );
 
-        return response()->json(['message' => 'Item deleted successfully']);
+        return response()->json([
+            'success' => true,
+            'message' => 'Item deleted successfully',
+            'deleted_appropriations' => count($itemUsage['appropriation_ids']),
+        ]);
     }
 
     // Sub-Item Methods
@@ -1253,9 +1824,20 @@ class AccountsLibController extends Controller
 
         $subItemName = $subItem->name;
 
-        // Delete Sub-Item
-        // Its Sub-Types will cascade through the FK.
-        $subItem->delete();
+        // Block when the allocation has already been disbursed
+        if ($blocked = $this->guardLibraryNodeDelete($barangayId, 'subitem', (int) $subItem->id)) {
+            return $blocked;
+        }
+
+        $subItemUsage = $this->getLibraryNodeUsage($barangayId, 'subitem', (int) $subItem->id);
+
+        DB::transaction(function () use ($barangayId, $subItemUsage, $subItem) {
+            $this->deleteExpenseClassAppropriations($barangayId, $subItemUsage['appropriation_ids']);
+
+            // Delete Sub-Item
+            // Its Sub-Types will cascade through the FK.
+            $subItem->delete();
+        });
 
         // Logging
         $expenseType = $parentItem->expenseType;
@@ -1278,6 +1860,7 @@ class AccountsLibController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Sub-item deleted successfully.',
+            'deleted_appropriations' => count($subItemUsage['appropriation_ids']),
         ]);
     }
 
@@ -1520,16 +2103,18 @@ class AccountsLibController extends Controller
             ->where('sub_item_id', $subItem->id)
             ->firstOrFail();
 
-        if ($this->isExpenseAccountUsed('expense_sub_type_id', $subType->id)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot delete this sub-type because it is already used in existing appropriation records.',
-            ], 422);
+        // Block when the allocation has already been disbursed
+        if ($blocked = $this->guardLibraryNodeDelete($barangayId, 'subtype', (int) $subType->id)) {
+            return $blocked;
         }
 
+        $subTypeUsage = $this->getLibraryNodeUsage($barangayId, 'subtype', (int) $subType->id);
         $subTypeName = $subType->name;
 
-        $subType->delete();
+        DB::transaction(function () use ($barangayId, $subTypeUsage, $subType) {
+            $this->deleteExpenseClassAppropriations($barangayId, $subTypeUsage['appropriation_ids']);
+            $subType->delete();
+        });
 
         // Logging
         $expenseType = $item->expenseType;
@@ -1550,7 +2135,8 @@ class AccountsLibController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Sub-type deleted successfully.'
+            'message' => 'Sub-type deleted successfully.',
+            'deleted_appropriations' => count($subTypeUsage['appropriation_ids'])
         ]);
     }
 
@@ -1904,11 +2490,27 @@ class AccountsLibController extends Controller
 
         /*
         |--------------------------------------------------------------------------
+        | Guard: block when the allocation has already been disbursed
+        |--------------------------------------------------------------------------
+        */
+
+        if ($blocked = $this->guardLibraryNodeDelete($barangayId, 'subsubtype', (int) $subSubType->id)) {
+            return $blocked;
+        }
+
+        $subSubTypeUsage = $this->getLibraryNodeUsage($barangayId, 'subsubtype', (int) $subSubType->id);
+
+
+        /*
+        |--------------------------------------------------------------------------
         | Delete
         |--------------------------------------------------------------------------
         */
 
-        $subSubType->delete();
+        DB::transaction(function () use ($barangayId, $subSubTypeUsage, $subSubType) {
+            $this->deleteExpenseClassAppropriations($barangayId, $subSubTypeUsage['appropriation_ids']);
+            $subSubType->delete();
+        });
 
 
         /*
@@ -1937,6 +2539,7 @@ class AccountsLibController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Sub-sub-type deleted successfully.',
+            'deleted_appropriations' => count($subSubTypeUsage['appropriation_ids']),
         ]);
     }
 }
