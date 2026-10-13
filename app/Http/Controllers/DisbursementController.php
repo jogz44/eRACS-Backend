@@ -399,41 +399,64 @@ class DisbursementController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | GENERATE NEXT DV NUMBER
+                | RESOLVE DV NUMBER
+                |
+                | If the user manually supplied a DV number, honor it as-is.
+                | Otherwise, generate the next sequential DV number for the month.
                 |--------------------------------------------------------------------------
                 */
-                $lastDv = Disbursement::where('barangay_id', $barangayId)
-                    ->where('dv_number', 'like', $prefix . '%')
-                    ->orderByDesc('id')
-                    ->lockForUpdate()
-                    ->value('dv_number');
+                $requestedDvNumber = trim((string) $request->input('dv_number'));
 
+                if ($requestedDvNumber !== '') {
 
-                if ($lastDv) {
+                    $dvNumber = $requestedDvNumber;
 
-                    $lastSequence = (int) substr($lastDv, -3);
+                    // Ensure the DV number has not already been used.
+                    $alreadyUsed = Disbursement::where('dv_number', $dvNumber)
+                        ->lockForUpdate()
+                        ->exists();
 
-                    $nextSequence = $lastSequence + 1;
+                    if ($alreadyUsed) {
+                        throw new \Exception(
+                            'DV number ' . $dvNumber . ' has already been used.'
+                        );
+                    }
 
                 } else {
 
-                    $nextSequence = 1;
-                }
+                    $lastDv = Disbursement::where('barangay_id', $barangayId)
+                        ->where('dv_number', 'like', $prefix . '%')
+                        ->orderByDesc('id')
+                        ->lockForUpdate()
+                        ->value('dv_number');
 
-                //PROTECT AGAINST MORE THAN 999 RECORDS
-                if ($nextSequence > 999) {
-                    throw new \Exception(
-                        'DV number sequence has reached its maximum of 999 for this month.'
+
+                    if ($lastDv) {
+
+                        $lastSequence = (int) substr($lastDv, -3);
+
+                        $nextSequence = $lastSequence + 1;
+
+                    } else {
+
+                        $nextSequence = 1;
+                    }
+
+                    //PROTECT AGAINST MORE THAN 999 RECORDS
+                    if ($nextSequence > 999) {
+                        throw new \Exception(
+                            'DV number sequence has reached its maximum of 999 for this month.'
+                        );
+                    }
+
+
+                    $dvNumber = $prefix . str_pad(
+                        $nextSequence,
+                        3,
+                        '0',
+                        STR_PAD_LEFT
                     );
                 }
-
-
-                $dvNumber = $prefix . str_pad(
-                    $nextSequence,
-                    3,
-                    '0',
-                    STR_PAD_LEFT
-                );
 
                 //CREATE DISBURSEMENT
 
