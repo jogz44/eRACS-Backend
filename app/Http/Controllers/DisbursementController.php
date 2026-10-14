@@ -17,6 +17,76 @@ use App\Models\BarangaySetup;
 
 class DisbursementController extends Controller
 {
+    private function extractDvSequence(?string $dvNumber): int
+    {
+        if (!$dvNumber) {
+            return 0;
+        }
+
+        $segments = explode('-', $dvNumber);
+
+        return count($segments) === 4 ? (int) $segments[3] : 0;
+    }
+
+    private function dvExistsForBarangay(string $dvNumber, int $barangayId): bool
+    {
+        return Disbursement::withoutGlobalScopes()
+            ->where('barangay_id', $barangayId)
+            ->where('dv_number', $dvNumber)
+            ->exists()
+            || \App\Models\BirRemittance::where('barangay_id', $barangayId)
+                ->where('dv_number', $dvNumber)
+                ->exists()
+            || \App\Models\FundTransfer::where('barangay_id', $barangayId)
+                ->where('dv_number', $dvNumber)
+                ->exists();
+    }
+
+    private function nextDvNumberForBarangay(int $barangayId, string $prefix, bool $lockForUpdate = false): string
+    {
+        $queries = [
+            Disbursement::withoutGlobalScopes()
+                ->where('barangay_id', $barangayId)
+                ->where('dv_number', 'like', $prefix . '%'),
+            \App\Models\BirRemittance::where('barangay_id', $barangayId)
+                ->where('dv_number', 'like', $prefix . '%'),
+            \App\Models\FundTransfer::where('barangay_id', $barangayId)
+                ->where('dv_number', 'like', $prefix . '%'),
+        ];
+
+        $lastSequence = 0;
+
+        foreach ($queries as $query) {
+            if ($lockForUpdate) {
+                $query->lockForUpdate();
+            }
+
+            $dvNumbers = $query->pluck('dv_number');
+
+            foreach ($dvNumbers as $dvNumber) {
+                $lastSequence = max(
+                    $lastSequence,
+                    $this->extractDvSequence($dvNumber)
+                );
+            }
+        }
+
+        $nextSequence = $lastSequence + 1;
+
+        if ($nextSequence > 999) {
+            throw new \Exception(
+                'DV number sequence has reached its maximum of 999 for this month.'
+            );
+        }
+
+        return $prefix . str_pad(
+            $nextSequence,
+            3,
+            '0',
+            STR_PAD_LEFT
+        );
+    }
+
     // GET /api/disbursements/recent-liquidated
     public function recentLiquidated(Request $request)
     {
@@ -411,50 +481,24 @@ class DisbursementController extends Controller
 
                     $dvNumber = $requestedDvNumber;
 
-                    // Ensure the DV number has not already been used.
-                    $alreadyUsed = Disbursement::where('dv_number', $dvNumber)
-                        ->lockForUpdate()
-                        ->exists();
+                    // Ensure the DV number has not already been used in this barangay.
+                    $alreadyUsed = $this->dvExistsForBarangay(
+                        $dvNumber,
+                        (int) $barangayId
+                    );
 
                     if ($alreadyUsed) {
                         throw new \Exception(
-                            'DV number ' . $dvNumber . ' has already been used.'
+                            'DV number ' . $dvNumber . ' has already been used in this barangay.'
                         );
                     }
 
                 } else {
 
-                    $lastDv = Disbursement::where('barangay_id', $barangayId)
-                        ->where('dv_number', 'like', $prefix . '%')
-                        ->orderByDesc('id')
-                        ->lockForUpdate()
-                        ->value('dv_number');
-
-
-                    if ($lastDv) {
-
-                        $lastSequence = (int) substr($lastDv, -3);
-
-                        $nextSequence = $lastSequence + 1;
-
-                    } else {
-
-                        $nextSequence = 1;
-                    }
-
-                    //PROTECT AGAINST MORE THAN 999 RECORDS
-                    if ($nextSequence > 999) {
-                        throw new \Exception(
-                            'DV number sequence has reached its maximum of 999 for this month.'
-                        );
-                    }
-
-
-                    $dvNumber = $prefix . str_pad(
-                        $nextSequence,
-                        3,
-                        '0',
-                        STR_PAD_LEFT
+                    $dvNumber = $this->nextDvNumberForBarangay(
+                        (int) $barangayId,
+                        $prefix,
+                        true
                     );
                 }
 
@@ -3669,50 +3713,55 @@ class DisbursementController extends Controller
 
     public function generateDvNumber(Request $request)
     {
-        $today = now();
-        $dd = str_pad($today->day, 2, '0', STR_PAD_LEFT);
-        $mm = str_pad($today->month, 2, '0', STR_PAD_LEFT);
-        $yyyy = $today->year;
+        $user = $request->user();
+        $adminUser = $request->user('admin');
 
-        $likePattern = 'DV-' . substr($yyyy, -2) . '-' . $mm . '-%';
+        $barangayId = ($adminUser && $request->filled('barangay_id'))
+            ? $request->barangay_id
+            : ($user->barangay_id ?? null);
 
-        // Check across all three tables
-        $lastSequence = 0;
+        if (!$barangayId) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Barangay could not be determined.'
+            ], 422);
+        }
 
-        $lastDisbursement = \App\Models\Disbursement::withoutGlobalScopes()
-            ->where('dv_number', 'like', $likePattern)
-            ->orderByDesc('dv_number')
-            ->first();
+        $date = now();
 
-        $lastBir = \App\Models\BirRemittance::where('dv_number', 'like', $likePattern)
-            ->orderByDesc('dv_number')
-            ->first();
+        if ($request->filled('date')) {
+            $dateParts = explode('/', $request->date);
 
-        $lastFt = \App\Models\FundTransfer::where('dv_number', 'like', $likePattern)
-            ->orderByDesc('dv_number')
-            ->first();
-
-        // Extract sequence numbers from each and pick the highest
-        $extractSeq = function ($record) {
-            if (!$record) return 0;
-            $segments = explode('-', $record->dv_number);
-            if (count($segments) === 4) {
-                return (int) $segments[3];
+            if (
+                count($dateParts) !== 3
+                || !checkdate(
+                    (int) $dateParts[1],
+                    (int) $dateParts[0],
+                    (int) $dateParts[2]
+                )
+            ) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Invalid date.'
+                ], 422);
             }
-            return 0;
-        };
 
-        $lastSequence = max(
-            $extractSeq($lastDisbursement),
-            $extractSeq($lastBir),
-            $extractSeq($lastFt)
-        );
+            $date = now()
+                ->setDate(
+                    (int) $dateParts[2],
+                    (int) $dateParts[1],
+                    (int) $dateParts[0]
+                );
+        }
 
-        $newDvNumber = sprintf(
-            'DV-%s-%s-%s',
-            substr($yyyy, -2),
-            $mm,
-            str_pad($lastSequence + 1, 3, '0', STR_PAD_LEFT)
+        $dd = str_pad($date->day, 2, '0', STR_PAD_LEFT);
+        $mm = str_pad($date->month, 2, '0', STR_PAD_LEFT);
+        $yyyy = $date->year;
+        $prefix = 'DV-' . substr($yyyy, -2) . '-' . $mm . '-';
+
+        $newDvNumber = $this->nextDvNumberForBarangay(
+            (int) $barangayId,
+            $prefix
         );
 
         return response()->json([

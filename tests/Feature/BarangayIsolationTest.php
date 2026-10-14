@@ -7,6 +7,7 @@ use App\Models\BarangayUser;
 use App\Models\Budget;
 use App\Models\Disbursement;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -117,6 +118,56 @@ class BarangayIsolationTest extends TestCase
             $response->assertStatus(422)->or($response->assertStatus(500));
         }
     }
-}
 
+    public function test_dv_number_generation_is_scoped_per_barangay(): void
+    {
+        $barangayA = Barangay::create(['name' => 'A']);
+        $barangayB = Barangay::create(['name' => 'B']);
+
+        $userA = BarangayUser::create([
+            'first_name' => 'User',
+            'last_name' => 'A',
+            'barangay_id' => $barangayA->id,
+            'position_id' => 1,
+            'email' => 'dv-a@example.com',
+            'username' => 'dva',
+            'password' => bcrypt('secret1234'),
+            'photo_path' => 'x',
+            'is_approved' => true,
+        ]);
+
+        DB::table('disbursements')->insert([
+            [
+                'barangay_id' => $barangayA->id,
+                'date' => '2026-01-07',
+                'dv_number' => 'DV-26-01-001',
+                'payee' => 'Payee A',
+                'dv_amount' => 100,
+                'status' => 'Unliquidated',
+                'user_id' => $userA->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'barangay_id' => $barangayB->id,
+                'date' => '2026-01-07',
+                'dv_number' => 'DV-26-01-004',
+                'payee' => 'Payee B',
+                'dv_amount' => 100,
+                'status' => 'Unliquidated',
+                'user_id' => $userA->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        Sanctum::actingAs($userA, [], 'barangay');
+
+        $response = $this->getJson('/api/barangay/generate-dvnumber?date=07/01/2026');
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('data.dv_number', 'DV-26-01-002');
+    }
+}
 
