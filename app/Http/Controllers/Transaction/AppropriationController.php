@@ -1483,6 +1483,9 @@ class AppropriationController extends Controller
 
         $netChange = $newTotal - $existingTotal;
 
+        $netChangeCentavos = (int) round($netChange * 100);
+        $availableCentavos = (int) round((float) $budget->current_amount * 100);
+
         \Log::info('Allocation validation', [
             'budget_id' => $budget->id,
             'budget_current_amount' => $budget->current_amount,
@@ -1500,12 +1503,12 @@ class AppropriationController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        if ($netChange > $budget->current_amount) {
+        if ($netChangeCentavos > $availableCentavos) {
 
             \Log::warning('Net change exceeds available budget', [
                 'net_change' => $netChange,
                 'available_budget' => $budget->current_amount,
-                'difference' => $netChange - $budget->current_amount,
+                'difference' => ($netChangeCentavos - $availableCentavos) / 100,
             ]);
 
             return response()->json([
@@ -1513,11 +1516,11 @@ class AppropriationController extends Controller
                 'message' => sprintf(
                     'Net change exceeds available budget by ₱%s. Available: ₱%s, Net Change: ₱%s',
                     number_format(
-                        $netChange - $budget->current_amount,
+                        ($netChangeCentavos - $availableCentavos) / 100,
                         2
                     ),
                     number_format(
-                        $budget->current_amount,
+                        $availableCentavos / 100,
                         2
                     ),
                     number_format(
@@ -1540,6 +1543,8 @@ class AppropriationController extends Controller
             $budget,
             $request,
             $netChange,
+            $netChangeCentavos,
+            $availableCentavos,
             $existingAllocations
         ) {
 
@@ -1829,7 +1834,7 @@ class AppropriationController extends Controller
             */
 
             $budget->current_amount =
-                $budget->current_amount - $netChange;
+                ($availableCentavos - $netChangeCentavos) / 100;
 
             $budget->save();
 
@@ -3726,4 +3731,3 @@ class AppropriationController extends Controller
         return implode(' > ', $parts);
     }
 }
-
